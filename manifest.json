@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "VIT Bulk Material Downloader",
+  "version": "1.8.3",
+  "description": "Select VTOP course materials by faculty and date, then download only what you pick into a folder named after the course. Row-level files, duplicate guard, error-page-safe queue, size report.",
+  "permissions": ["downloads", "storage", "scripting", "activeTab", "notifications", "tabs"],
+  "host_permissions": ["https://vtop.vit.ac.in/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "VIT Bulk Material Downloader",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://vtop.vit.ac.in/vtop/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>VIT Bulk Material Downloader</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>VIT Bulk Material Downloader</h1>
+  </header>
+
+  <main id="app">
+    <div id="loadingState" class="state-block">
+      <p>Looking for the course materials table…</p>
+    </div>
+
+    <div id="errorState" class="state-block hidden">
+      <p class="error-text" id="errorText"></p>
+      <button id="retryBtn" class="btn secondary">Retry</button>
+    </div>
+
+    <div id="readyState" class="hidden">
+      <section class="field">
+        <label>Detected course</label>
+        <div id="courseText" class="readonly-box"></div>
+        <div id="scanNote" class="scan-note"></div>
+      </section>
+
+      <section class="field">
+        <label for="folderName">Save into folder</label>
+        <input type="text" id="folderName" placeholder="Course folder name" />
+      </section>
+
+      <section class="field">
+        <label for="folderTemplate">Folder structure</label>
+        <select id="folderTemplate">
+          <option value="course">Course folder only</option>
+          <option value="semester-course">Semester / Course</option>
+        </select>
+        <div id="folderPreview" class="scan-note"></div>
+      </section>
+
+      <section class="filters">
+        <div class="field half">
+          <label for="facultyFilter">Faculty</label>
+          <select id="facultyFilter"></select>
+        </div>
+        <div class="field half">
+          <label for="dateFrom">From date</label>
+          <input type="date" id="dateFrom" />
+        </div>
+        <div class="field half">
+          <label for="dateTo">To date</label>
+          <input type="date" id="dateTo" />
+        </div>
+        <div class="field half align-end">
+          <button id="resetFiltersBtn" class="btn secondary small">Reset filters</button>
+        </div>
+      </section>
+
+      <section class="history-controls">
+        <label class="check" title="Show only files not downloaded before"><input type="checkbox" id="newOnlyFilter" /> New only</label>
+        <label class="check" title="Skip files already downloaded"><input type="checkbox" id="skipExistingBox" checked /> Skip downloaded</label>
+        <label class="check" title="Slower queue with retries for flaky downloads"><input type="checkbox" id="safeModeBox" /> Safe mode</label>
+      </section>
+
+      <section class="list-header">
+        <span id="matchCount">0 files</span>
+        <span class="spacer"></span>
+        <button id="selectAllBtn" class="btn link">Select all visible</button>
+        <button id="selectNoneBtn" class="btn link">Select none</button>
+        <button id="refreshBtn" class="btn link">Refresh</button>
+        <button id="diagBtn" class="btn link">Diagnostics</button>
+      </section>
+
+      <section id="materialsList" class="materials-list"></section>
+
+      <section class="footer">
+        <button id="sweepBtn" class="btn secondary" title="Walk VTOP pages one Next at a time and accumulate every row. Experimental: aborts on any anomaly.">Sweep all pages (experimental)</button>
+        <button id="downloadBtn" class="btn primary">Download selected</button>
+        <div class="queue-btns hidden" id="queueBtns">
+          <button id="pauseBtn" class="btn secondary small">Pause</button>
+          <button id="cancelBtn" class="btn secondary small">Cancel</button>
+        </div>
+        <button id="retrySkippedBtn" class="btn secondary hidden">Retry skipped</button>
+        <div id="progressBarWrap" class="progress-bar-wrap hidden">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <div id="progressCounts" class="progress-counts"></div>
+        <div id="progressText" class="progress-text"></div>
+        <ul id="skipList" class="skip-list"></ul>
+      </section>
+    </div>
+
+    <div id="previewOverlay" class="overlay hidden">
+      <div class="modal" role="dialog" aria-label="Download preview">
+        <h2>Download preview</h2>
+        <dl class="preview-rows">
+          <div><dt>Course</dt><dd id="previewCourse"></dd></div>
+          <div><dt>Filters</dt><dd id="previewFilters"></dd></div>
+          <div><dt>Selected</dt><dd id="previewCount"></dd></div>
+          <div><dt>Destination</dt><dd id="previewDest"></dd></div>
+        </dl>
+        <p id="previewWarning" class="preview-warning hidden"></p>
+        <div class="modal-actions">
+          <button id="previewCancelBtn" class="btn secondary">Cancel</button>
+          <button id="previewStartBtn" class="btn primary">Start download</button>
+        </div>
+      </div>
+    </div>
+    <div id="diagOverlay" class="overlay hidden">
+      <div class="modal" role="dialog" aria-label="Diagnostics">
+        <h2>Diagnostics</h2>
+        <ul id="diagList" class="skip-list"></ul>
+        <div class="modal-actions">
+          <button id="diagCloseBtn" class="btn secondary">Close</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

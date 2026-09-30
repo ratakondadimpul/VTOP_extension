@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Mock VTOP Course Page</title></head>
+<body>
+  <select id="courseSelect">
+    <option>Select course</option>
+    <option selected>Fall Semester 2025-26 - CSE2001 - DBMS - Dr John</option>
+    <option>Fall Semester 2025-26 - CSE3001 - OS - Dr Jane</option>
+  </select>
+
+  <div id="dtWrapper">
+    <div>
+      <label>Show
+        <select id="lengthSelect">
+          <option value="10">10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+        </select> entries
+      </label>
+      <label>Search:<input type="search"></label>
+    </div>
+
+    <table id="materials">
+      <thead><tr>
+        <th>Course Detail</th><th>Material Detail</th><th>Uploaded By</th><th>Download</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td>CSE2001 - DBMS</td>
+          <td>Lecture 1 Intro<br>1 (Document)</td>
+          <td>CSE2001 - Dr John - 12-01-2025</td>
+          <td><a href="data:text/plain,hello1" download="file1.txt" class="dl">Download</a></td>
+        </tr>
+        <tr>
+          <td>CSE2001 - DBMS</td>
+          <td>Lecture 2 Indexing<br>1 (Document)</td>
+          <td>CSE2001 - Dr John - 15-02-2025</td>
+          <td><button class="dl" onclick="window.__dl2=(window.__dl2||0)+1">Download</button></td>
+        </tr>
+        <tr>
+          <td>CSE2001 - DBMS</td>
+          <td>Syllabus<br>0 (Document)</td>
+          <td>CSE2001 - Dr John</td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+    <div>Showing 1 to 3 of 3 entries</div>
+  </div>
+</body>
+</html>
