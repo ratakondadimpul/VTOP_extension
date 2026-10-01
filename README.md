@@ -184,3 +184,75 @@ checks pass.
 **Pills fix:** the New/Skip/Safe toggles are one-line pills pinned under
 the header while scrolling (they used to wrap to two lines and slide
 under the sticky bar). Short labels with full-text tooltips.
+
+## v1.9.0 — Semester / Course / Faculty folder option
+
+**What:** "Folder structure" has a third option. With
+**Semester / Course / Faculty**, each faculty's files land in their own
+subfolder (`Downloads/<Semester>/<Course>/<Faculty>/`). A batch spanning
+several faculty splits into one download group per faculty (one capture
+job each); single-faculty batches behave exactly as before, one level
+deeper.
+
+**Safety:** folder sanitization now caps at 3 levels instead of 2 —
+traversal/illegal/excess segments are still stripped, so names can never
+escape `Downloads/`. A `/` inside a faculty name is flattened to `-`
+(never an extra level), and degenerate server filenames (`.`, `..`) are
+replaced before saving. Download history records the per-faculty folder, so
+"Skip downloaded" keeps matching. The preview shows the concrete path
+when a single faculty is selected, otherwise the base path with a
+"one subfolder per faculty" note.
+
+## v1.9.1 — batch isolation + restart-proof size report (found live)
+
+**One failed file no longer fails the batch.** A single item's transport
+failure used to flip the whole run to "Something went wrong": successes
+went unrecorded and Retry skipped never appeared. Now the failure is
+isolated per item — the run reports Done with details, history keeps the
+wins, and Retry skipped offers the rest. Proven live on a 46-file batch
+(45 downloaded, 1 already-downloaded skipped, 0 lost).
+
+**Size report survives worker restarts.** The post-batch report used to
+read job→file attribution from worker memory only, which a minutes-long
+batch outlives (idle shutdown) — the report silently vanished. It now
+unions the persisted `downloadJobs` map, so sizes render even after a
+restart. Attribution entries are kept instead of consumed (bounded by the
+existing 200-entry cap).
+
+## v1.10.0 — UI/UX overhaul
+
+**Visual rethink (same navy system):** higher-contrast ink ramp, taller
+list viewport, document glyphs on rows, checked-row accent edge, loading
+spinner on the download button, error cards, pill refinements, visible
+focus, and `prefers-reduced-motion` support.
+
+**List + progress:** title/faculty search box, download button disabled
+until something is ticked (with hint), live per-file status markers
+(active ✓/!/–) during the queue, and a richer preview (folder breakdown,
+first-8 file sample, same-title collision forecast).
+
+**Selection power:** Last-7/30-days presets, invert-visible, faculty quick
+chips (top 5 by count), and a repeated-title forecast in the count bar.
+
+**Onboarding + errors:** 3-step first-run tour (persisted, replayable from
+Diagnostics), error-state checklist, empty-filter guidance, actionable
+total-failure message, and one-click Copy report in Diagnostics.
+
+## v1.10.1 — stale-page robustness (found on a live 74-file batch)
+
+**The popup notices when VTOP moves on.** If the course dropdown changes
+(or the table repages) after a scan, the old code fired every selected
+click into the void ("not on the currently displayed page" × 74). Now:
+a cheap `GET_COURSE` check aborts before arming with a clear Refresh
+message, and three leading misses with zero downloads stop the batch
+early instead of clicking through ghosts.
+
+**Serialized loads.** Double-fired loads (auto-load + Retry racing) could
+interleave scans and desync rows from selection — `loadState` is now
+guarded to one flight, stale responses are ignored.
+
+**Idempotent wiring.** `wireEvents` runs once no matter how often the
+script executes — one click can never start two queues.
+
+Also: duplicate-click map pruned on write, preview Filters line includes
+the search term, tour never resurrects via Refresh mid-session.

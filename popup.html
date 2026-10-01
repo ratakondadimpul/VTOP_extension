@@ -17,6 +17,14 @@
 
     <div id="errorState" class="state-block hidden">
       <p class="error-text" id="errorText"></p>
+      <div class="error-checklist">
+        <p>Quick checks:</p>
+        <ul>
+          <li>You're on the VTOP <strong>Course Page - view</strong> tab</li>
+          <li>A course is selected in the dropdown</li>
+          <li>The Course Materials table is visible (scroll down)</li>
+        </ul>
+      </div>
       <button id="retryBtn" class="btn secondary">Retry</button>
     </div>
 
@@ -37,11 +45,16 @@
         <select id="folderTemplate">
           <option value="course">Course folder only</option>
           <option value="semester-course">Semester / Course</option>
+          <option value="semester-course-faculty">Semester / Course / Faculty</option>
         </select>
         <div id="folderPreview" class="scan-note"></div>
       </section>
 
       <section class="filters">
+        <div class="field full">
+          <label for="searchBox">Search</label>
+          <input type="search" id="searchBox" placeholder="Filter by title or faculty…" autocomplete="off" />
+        </div>
         <div class="field half">
           <label for="facultyFilter">Faculty</label>
           <select id="facultyFilter"></select>
@@ -56,6 +69,9 @@
         </div>
         <div class="field half align-end">
           <button id="resetFiltersBtn" class="btn secondary small">Reset filters</button>
+        </div>
+        <div class="field full">
+          <div id="facultyChips" class="chips" role="group" aria-label="Quick faculty filter"></div>
         </div>
       </section>
 
@@ -74,11 +90,18 @@
         <button id="diagBtn" class="btn link">Diagnostics</button>
       </section>
 
+      <section class="presets" aria-label="Selection presets">
+        <button id="presetWeekBtn" class="btn link" title="Select visible materials from the last 7 days">Last 7 days</button>
+        <button id="presetMonthBtn" class="btn link" title="Select visible materials from the last 30 days">Last 30 days</button>
+        <button id="invertBtn" class="btn link" title="Flip selection of currently visible materials">Invert visible</button>
+      </section>
+
       <section id="materialsList" class="materials-list"></section>
 
       <section class="footer">
         <button id="sweepBtn" class="btn secondary" title="Walk VTOP pages one Next at a time and accumulate every row. Experimental: aborts on any anomaly.">Sweep all pages (experimental)</button>
         <button id="downloadBtn" class="btn primary">Download selected</button>
+        <div id="selectHint" class="scan-note"></div>
         <div class="queue-btns hidden" id="queueBtns">
           <button id="pauseBtn" class="btn secondary small">Pause</button>
           <button id="cancelBtn" class="btn secondary small">Cancel</button>
@@ -102,6 +125,8 @@
           <div><dt>Selected</dt><dd id="previewCount"></dd></div>
           <div><dt>Destination</dt><dd id="previewDest"></dd></div>
         </dl>
+        <ul id="previewFolders" class="preview-folders"></ul>
+        <ul id="previewFiles" class="preview-files"></ul>
         <p id="previewWarning" class="preview-warning hidden"></p>
         <div class="modal-actions">
           <button id="previewCancelBtn" class="btn secondary">Cancel</button>
@@ -114,7 +139,23 @@
         <h2>Diagnostics</h2>
         <ul id="diagList" class="skip-list"></ul>
         <div class="modal-actions">
+          <button id="diagCopyBtn" class="btn secondary small">Copy report</button>
+          <button id="diagTourBtn" class="btn secondary small">Replay tour</button>
           <button id="diagCloseBtn" class="btn secondary">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="coachOverlay" class="overlay hidden">
+      <div class="modal" role="dialog" aria-label="Quick tour">
+        <h2>Get course files in 3 steps</h2>
+        <ol class="coach-steps">
+          <li><strong>Pick a course</strong> in VTOP's "Select Registered Course" dropdown, then open this popup.</li>
+          <li><strong>Filter and tick</strong> what you want — search, faculty, dates, or presets.</li>
+          <li><strong>Download selected</strong> — files land in a folder named after the course.</li>
+        </ol>
+        <div class="modal-actions">
+          <button id="coachDoneBtn" class="btn primary">Got it</button>
         </div>
       </div>
     </div>

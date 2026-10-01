@@ -59,10 +59,29 @@ function findCourseDropdown() {
   return best;
 }
 
+// Iteration 4 placeholder guard (REQUIREMENTS B): VTOP course dropdowns
+// start on a non-course prompt ("Select course", "-- Select --") while a
+// valid semester option exists but is not selected. findCourseDropdown still
+// identifies the select via that valid option, so the SELECTED text must be
+// rejected here; otherwise ok=true with course="Select course".
+function isPlaceholderCourseText(text) {
+  const t = norm(text);
+  if (!t) return true;
+  const lower = t.toLowerCase();
+  if (/^(please\s+)?select\b/.test(lower)) return true;
+  if (/^(please\s+)?choose\b/.test(lower)) return true;
+  if (/^[-–—\s.]+$/.test(t)) return true;
+  if (/^--/.test(t) && /select/i.test(t)) return true;
+  return false;
+}
+
 function getSelectedCourseText() {
   const sel = findCourseDropdown();
   if (sel && sel.selectedIndex >= 0) {
-    return norm(sel.options[sel.selectedIndex].text);
+    const txt = norm(sel.options[sel.selectedIndex].text);
+    if (!txt) return null;
+    if (isPlaceholderCourseText(txt)) return null;
+    return txt;
   }
   return null;
 }
@@ -92,6 +111,73 @@ function headersFrom(cells) {
   return cells.map((c) => norm(c.textContent).toLowerCase());
 }
 
+// L3b helpers (Iteration 3): pure-drift tables such as
+// S.No|Details|Faculty|Action lack the "material"/"course detail"
+// substrings, so the L3 keyword gate misses them. L3b requires ALL THREE
+// legs to avoid false positives:
+//  (1) drifted header synonyms (>=2 groups),
+//  (2) download-control majority in one column,
+//  (3) VTOP structural (course dropdown / wrapper / badge) + material-like
+//      row majority (badge OR date+dash). Generic tables without
+//      material-like rows still miss.
+function l3SynonymScore(headerText) {
+  const joined = (headerText || []).join(" | ");
+  let score = 0;
+  if (/s\.?\s*no|serial/.test(joined)) score++;
+  if (/detail|material|title|topic|subject|description/.test(joined)) score++;
+  if (/faculty|uploaded|author|staff|prof/.test(joined)) score++;
+  if (/action|download|view|file/.test(joined)) score++;
+  return score;
+}
+
+function isMaterialLikeRowText(lower) {
+  if (!lower) return false;
+  if (lower.includes("(document")) return true;
+  if (/\d{2}-\d{2}-\d{4}/.test(lower) && lower.includes(" - ")) return true;
+  return false;
+}
+
+function pageHasCourseSignal() {
+  try {
+    const selects = Array.from(document.querySelectorAll("select"));
+    for (const sel of selects) {
+      const opts = Array.from(sel.options || []);
+      if (opts.some((o) => /semester/i.test(o.text || "") && (o.text || "").includes(" - "))) return true;
+    }
+  } catch (e) { /* ignore - structural check is best-effort */ }
+  return false;
+}
+
+// L3 column inference (Iteration 3): fixed 0/1/2 assumed VTOP 4-col order
+// (course/material/uploaded). Narrow 3-col WITHOUT S.No
+// ([Material, Uploaded, Action]) misattributed faculty as "D" because
+// uploaded fallback 2 read the download cell. Infer per-table:
+//  4-col -> 0/1/2 (preserved); 3-col shared (download cell carries
+//  date/badge/dash) -> 0/1/2; 3-col separate -> 0/0/1.
+function inferL3Columns(bodyRows, downloadCol) {
+  if (!bodyRows || !bodyRows.length) return null;
+  const colCount = bodyRows[0].querySelectorAll("td").length;
+  if (colCount === 4) return { course: 0, material: 1, uploaded: 2 };
+  if (colCount === 3) {
+    const dl = (typeof downloadCol === "number" && downloadCol >= 0) ? downloadCol : 2;
+    let sharedHits = 0;
+    for (const tr of bodyRows) {
+      const cell = tr.querySelectorAll("td")[dl];
+      const txt = norm((cell && (cell.innerText || cell.textContent)) || "").toLowerCase();
+      if (txt.includes("(document") || (/\d{2}-\d{2}-\d{4}/.test(txt) && txt.includes(" - ")) || (/\d{2}-\d{2}-\d{4}/.test(txt) && txt.length > 12)) sharedHits++;
+    }
+    if (sharedHits >= Math.ceil(bodyRows.length / 2)) return { course: 0, material: 1, uploaded: 2 };
+    return { course: 0, material: 0, uploaded: 1 };
+  }
+  if (colCount >= 2) {
+    const dl = (typeof downloadCol === "number" && downloadCol >= 0 && downloadCol < colCount) ? downloadCol : colCount - 1;
+    const uploaded = dl > 0 ? dl - 1 : 0;
+    const material = dl > 1 ? dl - 2 : 0;
+    return { course: 0, material, uploaded };
+  }
+  return { course: 0, material: 1, uploaded: 2 };
+}
+
 function findMaterialsTable() {
   const tables = Array.from(document.querySelectorAll("table"));
   // L1
@@ -101,7 +187,7 @@ function findMaterialsTable() {
     const hasAll = REQUIRED_HEADERS.every((h) => headerText.some((t) => t.includes(h)));
     if (hasAll) {
       diagNote("table:L1-strict", `${headerCells.length} headers`);
-      return { table, headerText, strategy: "L1-strict" };
+      return { table, headerText, strategy: "L1-strict", downloadCol: columnIndex(headerText, "download") };
     }
   }
   // L2
@@ -113,7 +199,7 @@ function findMaterialsTable() {
       const headerText = headersFrom(cells);
       if (columnIndex(headerText, "material detail") >= 0 && columnIndex(headerText, "download") >= 0) {
         diagNote("table:L2-drift", "header wording changed?");
-        return { table, headerText, strategy: "L2-drift" };
+        return { table, headerText, strategy: "L2-drift", downloadCol: columnIndex(headerText, "download") };
       }
     }
   }
@@ -135,7 +221,48 @@ function findMaterialsTable() {
         const headerRow = table.querySelector("thead tr") || table.querySelector("tr");
         const headerText = headersFrom(headerRow ? Array.from(headerRow.querySelectorAll("th, td")) : []);
         diagNote("table:L3-controls", `col ${c} has controls in ${withControl}/${bodyRows.length} rows`);
-        return { table, headerText, strategy: "L3-controls" };
+        return { table, headerText, strategy: "L3-controls", downloadCol: c };
+      }
+    }
+  }
+  // L3b: pure-drift without "material"/"course detail" keyword (e.g.,
+  // S.No|Details|Faculty|Action). Requires ALL THREE legs above; generic
+  // tables without material-like rows still miss (no false positives).
+  const courseSignal = pageHasCourseSignal();
+  for (const table of tables) {
+    const headerRowB = table.querySelector("thead tr") || table.querySelector("tr");
+    const headerTextB = headersFrom(headerRowB ? Array.from(headerRowB.querySelectorAll("th, td")) : []);
+    if (headerTextB.length < 2) continue;
+    if (l3SynonymScore(headerTextB) < 2) continue;
+    const bodyRowsB = Array.from(table.querySelectorAll("tbody tr")).filter(
+      (tr) => tr.querySelectorAll("td").length > 0
+    );
+    if (bodyRowsB.length < 1) continue;
+    const colCountB = bodyRowsB[0].querySelectorAll("td").length;
+    if (colCountB < 2 || colCountB > 6) continue;
+    const likeCount = bodyRowsB.filter((tr) => isMaterialLikeRowText((tr.textContent || "").toLowerCase())).length;
+    if (likeCount < Math.max(1, Math.ceil(bodyRowsB.length / 2))) continue;
+    let structuralOk = courseSignal;
+    if (!structuralOk) {
+      try {
+        const wrapB = findTableWrapper(table);
+        const wt = norm((wrapB && wrapB.textContent) || "").toLowerCase();
+        if (/showing\s+\d+\s+to\s+\d+\s+of\s+\d+\s+entries/.test(wt) || /show.*entries/.test(wt)) structuralOk = true;
+      } catch (e) { /* best-effort */ }
+      if (!structuralOk) {
+        const badgeCount = bodyRowsB.filter((tr) => (tr.textContent || "").toLowerCase().includes("(document")).length;
+        if (badgeCount >= Math.ceil(bodyRowsB.length / 2)) structuralOk = true;
+      }
+    }
+    if (!structuralOk) continue;
+    for (let c = 0; c < colCountB; c++) {
+      const withControl = bodyRowsB.filter((tr) => {
+        const cell = tr.querySelectorAll("td")[c];
+        return cell && cell.querySelector("a, button, input[type='button'], input[type='submit'], [onclick], [role='button']");
+      }).length;
+      if (withControl >= Math.max(1, Math.ceil(bodyRowsB.length / 2))) {
+        diagNote("table:L3-controls", `col ${c} has controls in ${withControl}/${bodyRowsB.length} rows (drift)`);
+        return { table, headerText: headerTextB, strategy: "L3-controls", downloadCol: c };
       }
     }
   }
@@ -217,7 +344,12 @@ function extractFacultyName(text) {
   const firstLine = norm(text.split("\n")[0]);
   const parts = firstLine.split(" - ").map(norm).filter(Boolean);
   if (parts.length >= 3) return parts.slice(1, -1).join(" - ");
-  if (parts.length === 2) return parts[1];
+  // 2-part split is ambiguous: "Course - Faculty" vs "Faculty - Date".
+  // When the second part is a date, the faculty is the first part.
+  if (parts.length === 2) {
+    if (/\d{2}-\d{2}-\d{4}/.test(parts[1])) return parts[0];
+    return parts[1];
+  }
   return firstLine;
 }
 
@@ -275,7 +407,7 @@ function assignRowKeys(rows, sig) {
 }
 
 // Parses whatever page of the table is CURRENTLY rendered - nothing more.
-function parseCurrentPage(table, headerText) {
+function parseCurrentPage(table, headerText, fallbackDownloadCol) {
   const idxCourseDetail = columnIndex(headerText, "course detail");
   const idxMaterialDetail = columnIndex(headerText, "material detail");
   const idxUploadedBy = columnIndex(headerText, "uploaded by");
@@ -285,27 +417,70 @@ function parseCurrentPage(table, headerText) {
     (tr) => tr.querySelectorAll("td").length > 0
   );
 
+  // L3 column inference: fixed 0/1/2 is correct for 4-col and shared 3-col,
+  // but narrow 3-col separate ([Material, Uploaded, Action]) needs 0/0/1.
+  // Compute once per table when headers drifted (all indices -1).
+  let l3Fb = null;
+  if (idxCourseDetail < 0 && idxMaterialDetail < 0 && idxUploadedBy < 0 && bodyRows.length) {
+    try { l3Fb = inferL3Columns(bodyRows, fallbackDownloadCol); } catch (e) { l3Fb = null; }
+  }
+  const fbCourse = (l3Fb && typeof l3Fb.course === "number") ? l3Fb.course : 0;
+  const fbMaterial = (l3Fb && typeof l3Fb.material === "number") ? l3Fb.material : 1;
+  const fbUploaded = (l3Fb && typeof l3Fb.uploaded === "number") ? l3Fb.uploaded : 2;
+
   return bodyRows.map((tr) => {
     const cells = Array.from(tr.querySelectorAll("td"));
-    const materialRaw = (cells[idxMaterialDetail] && (cells[idxMaterialDetail].innerText || cells[idxMaterialDetail].textContent)) || "";
-    const uploadedByRaw = (cells[idxUploadedBy] && (cells[idxUploadedBy].innerText || cells[idxUploadedBy].textContent)) || "";
+    // L3 fallback: when headers drifted beyond L2, columnIndex is -1.
+    // Fall back to inferred VTOP order (4-col 0/1/2, narrow separate 0/0/1)
+    // and to the detected control column for downloads (else last col).
+    // Per-row bounds-checked so narrow tables never read cells[-1].
+    const pickCell = (idx, fb) => {
+      if (idx >= 0 && idx < cells.length) return cells[idx];
+      if (typeof fb === "number" && fb >= 0 && fb < cells.length) return cells[fb];
+      return undefined;
+    };
+    let dlIdx = idxDownload;
+    if (!(dlIdx >= 0 && dlIdx < cells.length)) {
+      if (typeof fallbackDownloadCol === "number" && fallbackDownloadCol >= 0 && fallbackDownloadCol < cells.length) {
+        dlIdx = fallbackDownloadCol;
+      } else {
+        dlIdx = cells.length - 1;
+      }
+    }
+    const courseCell = pickCell(idxCourseDetail, fbCourse);
+    const materialCell = pickCell(idxMaterialDetail, fbMaterial);
+    const uploadedCell = pickCell(idxUploadedBy, fbUploaded);
+    const downloadCellResolved = (dlIdx >= 0 && dlIdx < cells.length) ? cells[dlIdx] : null;
+    const materialRaw = (materialCell && (materialCell.innerText || materialCell.textContent)) || "";
+    const uploadedByRaw = (uploadedCell && (uploadedCell.innerText || uploadedCell.textContent)) || "";
     const materialCellText = norm(materialRaw);
     const uploadedByText = norm(uploadedByRaw);
     const docMatch = materialCellText.match(/(\d+)\s*\(Document/i);
     const docCount = docMatch ? Number(docMatch[1]) : 0;
     // Split raw (pre-norm) on newlines so <br>-separated titles keep first line.
     const titleLine = norm((materialRaw.split("\n")[0] || materialCellText).trim());
+    // Date fallback (Iteration 3): split Faculty columns (e.g., pure-drift
+    // "ProfA" alone) carry no date; the date may live in Details. Scan the
+    // whole row so dates are not lost when columns split. Uploaded cell wins.
+    let dateText = (uploadedByText.match(/\d{2}-\d{2}-\d{4}/) || [null])[0];
+    if (!dateText) {
+      for (const c of cells) {
+        const t = norm((c && (c.innerText || c.textContent)) || "");
+        const m = t.match(/\d{2}-\d{2}-\d{4}/);
+        if (m) { dateText = m[0]; break; }
+      }
+    }
 
     const row = {
-      courseDetail: cellText(cells[idxCourseDetail]),
+      courseDetail: cellText(courseCell),
       title: titleLine,
       docCount,
       facultyName: extractFacultyName(uploadedByRaw),
-      date: extractDate(uploadedByText),
-      dateText: (uploadedByText.match(/\d{2}-\d{2}-\d{4}/) || [null])[0],
+      date: extractDate(dateText || uploadedByText),
+      dateText,
       fullMaterial: materialCellText,
       uploadedByNorm: uploadedByText,
-      downloadCell: cells[idxDownload] || null
+      downloadCell: downloadCellResolved
     };
     // v1.8.1: the "N (Document)" badge is unreliable - rows showing
     // "0 (Document)" often still have a working download icon (one file).
@@ -490,14 +665,14 @@ async function getState() {
     };
   }
 
-  const { table, headerText, strategy } = found;
+  const { table, headerText, strategy, downloadCol } = found;
   const wrapper = findTableWrapper(table);
 
   const scanDetail = await ensureMaxPageLength(table, wrapper);
 
   const showingInfo = readShowingInfo(wrapper);
 
-  const currentPageRows = parseCurrentPage(table, headerText);
+  const currentPageRows = parseCurrentPage(table, headerText, downloadCol);
   assignRowKeys(currentPageRows, pageSignature(wrapper));
   currentPageRows.forEach((r) => accumulated.set(r.key, r));
 
@@ -548,9 +723,21 @@ async function getState() {
 }
 
 // v3.3 duplicate guard: ignore re-clicks of the same row within 30s.
-// Double-fire used to produce file.pdf + file (1).pdf pairs.
+// Double-fire used to produce file.pdf + file (1).pdf pairs. Pruned on
+// write so long-lived pages never accumulate entries.
 const recentClicks = new Map(); // key -> timestamp ms
 const DUPLICATE_WINDOW_MS = 30000;
+
+function markClicked(key) {
+  recentClicks.set(key, Date.now());
+  if (recentClicks.size > 400) {
+    const cutoff = Date.now() - DUPLICATE_WINDOW_MS;
+    for (const [k, t] of recentClicks) {
+      if (t < cutoff) recentClicks.delete(k);
+      if (recentClicks.size <= 200) break;
+    }
+  }
+}
 
 // Best-effort background RPC with timeout. Old background workers (or test
 // mocks without the new handlers) resolve undefined -> caller falls back to
@@ -597,15 +784,15 @@ async function downloadRows(keys, onProgress) {
     return { clicked: 0, skipped: total, ok: false, error: "no_table", skippedDetails };
   }
 
-  const { table, headerText } = found;
-  const liveRows = parseCurrentPage(table, headerText);
+  const { table, headerText, downloadCol } = found;
+  const liveRows = parseCurrentPage(table, headerText, downloadCol);
   assignRowKeys(liveRows, pageSignature(findTableWrapper(table)));
   const liveByKey = new Map(liveRows.map((r) => [r.key, r]));
 
   const reportSkip = (key, title, reason) => {
     skipped++;
     skippedDetails.push({ key, title, reason });
-    onProgress && onProgress({ done: clicked + skipped, total, current: title, skipped: true });
+    onProgress && onProgress({ done: clicked + skipped, total, current: title, skipped: true, key });
   };
 
   for (const key of keys) {
@@ -647,7 +834,7 @@ async function downloadRows(keys, onProgress) {
       // synthetic MouseEvent here, which fired VTOP handlers twice and
       // produced file.pdf + file (1).pdf duplicates.
       el.click();
-      recentClicks.set(key, Date.now());
+      markClicked(key);
     } catch (e) {
       reportSkip(key, row.title, "failed");
       continue;
@@ -691,7 +878,7 @@ async function downloadRows(keys, onProgress) {
       // to legacy counted-click so slow/odd pages still download.
     }
     clicked++;
-    onProgress && onProgress({ done: clicked + skipped, total, current: row.title, skipped: false });
+    onProgress && onProgress({ done: clicked + skipped, total, current: row.title, skipped: false, key });
   }
 
   return { clicked, skipped, ok: true, skippedDetails };
@@ -705,8 +892,8 @@ async function advancePageOnce() {
   const courseBefore = getSelectedCourseText();
   const found = findMaterialsTable();
   if (!found) return { advanced: false, reason: "no_table" };
-  const { table, headerText } = found;
-  const beforeRows = parseCurrentPage(table, headerText);
+  const { table, headerText, downloadCol } = found;
+  const beforeRows = parseCurrentPage(table, headerText, downloadCol);
   if (!beforeRows.length) return { advanced: false, reason: "no_rows" };
   const beforeKey = beforeRows[0].key;
 
@@ -746,7 +933,7 @@ async function advancePageOnce() {
     }
     const again = findMaterialsTable();
     if (!again) return { advanced: false, reason: "table_gone" };
-    const live = parseCurrentPage(again.table, again.headerText);
+    const live = parseCurrentPage(again.table, again.headerText, again.downloadCol);
     if (live.length && live[0].key !== beforeKey) {
       return { advanced: true, rowsOnPage: live.length };
     }
@@ -771,7 +958,32 @@ function runDiagnostics() {
         downloadButtons++;
       }
     });
-    const idx = columnIndex(found.headerText, "material detail");
+    let idx = columnIndex(found.headerText, "material detail");
+    // L3 fallback: headers drifted. Infer material column as the non-download
+    // column with the most "(Document" badges so narrow separate 3-col
+    // ([Material, Uploaded, Action] -> 0) and shared/4-col (-> 1) both count.
+    if (idx < 0 && bodyRows.length) {
+      const colCountD = bodyRows[0].querySelectorAll("td").length;
+      const dlD = (found && typeof found.downloadCol === "number") ? found.downloadCol : -1;
+      let best = -1, bestHits = -1;
+      for (let c = 0; c < colCountD; c++) {
+        if (c === dlD) continue;
+        let hits = 0;
+        for (const tr of bodyRows) {
+          const cell = tr.querySelectorAll("td")[c];
+          const txt = norm((cell && (cell.innerText || cell.textContent)) || "").toLowerCase();
+          if (txt.includes("(document")) hits++;
+        }
+        if (hits > bestHits) { bestHits = hits; best = c; }
+      }
+      if (best >= 0 && bestHits > 0) idx = best;
+      else if (colCountD > 1) {
+        try {
+          const inf = inferL3Columns(bodyRows, found.downloadCol);
+          idx = (inf && typeof inf.material === "number") ? inf.material : 1;
+        } catch (e) { idx = 1; }
+      }
+    }
     if (idx >= 0) {
       bodyRows.forEach((tr) => {
         const cell = tr.querySelectorAll("td")[idx];
@@ -800,6 +1012,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "GET_STATE") {
     getState().then(sendResponse);
     return true; // async
+  }
+
+  // Lightweight staleness guard: just the selected course text, no table
+  // scan. The popup calls this before (and during) a batch to detect the
+  // course dropdown changing underneath it.
+  if (msg && msg.type === "GET_COURSE") {
+    try {
+      sendResponse({ ok: true, courseText: getSelectedCourseText() });
+    } catch (e) {
+      sendResponse({ ok: false, courseText: null });
+    }
+    return false;
   }
 
   if (msg && msg.type === "DOWNLOAD_ROWS") {

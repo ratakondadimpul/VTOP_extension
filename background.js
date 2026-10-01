@@ -3,7 +3,8 @@
 // JS/blob download, form POST, new-tab attachment...), Chrome will still
 // fire downloads.onDeterminingFilename for it. We listen for that and,
 // while "armed", rewrite the save path to "<Folder>/<originalName>" where
-// <Folder> is either "Course" or "Semester/Course" (Phase 2 templates).
+// <Folder> is "Course", "Semester/Course" or "Semester/Course/Faculty"
+// (Phase 2 templates + v1.9.0 faculty split).
 // This means we do NOT need to know VTOP's internal download mechanism -
 // we just need to know WHEN a batch job is running and WHAT folder to use.
 
@@ -18,7 +19,8 @@ function sanitizeFolderName(name) {
   return cleaned || "VIT Downloads";
 }
 
-// Phase 2: allow at most one level of nesting ("Semester/Course").
+// Phase 2 (+v1.9.0 faculty split): allow up to two levels of nesting
+// ("Semester/Course" or "Semester/Course/Faculty").
 // Each segment is sanitized independently; "..", empty and excess segments
 // are dropped so a crafted folder name can never escape Downloads/.
 function sanitizeFolderPath(path) {
@@ -26,7 +28,7 @@ function sanitizeFolderPath(path) {
     .split("/")
     .map((s) => sanitizeFolderName(s))
     .filter((s) => s && s !== "." && s !== ".." && s !== "-" && s !== "VIT Downloads");
-  const kept = segs.slice(0, 2);
+  const kept = segs.slice(0, 3);
   if (!kept.length) return "VIT Downloads";
   return kept.join("/");
 }
@@ -230,23 +232,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // v1.8.2: post-batch size report. Waits (bounded) for the job's downloads
   // to finish, then returns final [{ name, bytes, state }] so the popup can
   // tell byte-identical same-named files apart from different ones.
+  // v1.9.1: job->id attribution ALSO comes from the persisted downloadJobs
+  // map (memory jobDlIds is lost when the worker idles out mid-batch, which
+  // a 46-file live run proved happens). Union of both, deduped.
   if (msg && msg.type === "SIZE_REPORT") {
-    const ids = (msg.jobId && jobDlIds.get(msg.jobId)) || [];
-    queryFinalItems(ids.slice(), 30000).then((items) => {
+    const memIds = (msg.jobId && jobDlIds.get(msg.jobId)) || [];
+    chrome.storage.local.get(["downloadJobs"], (data) => {
+      let storedIds = [];
       try {
-        sendResponse({
-          ok: true,
-          files: items.map((it) => ({
-            name: String((it.filename || "").split(/[\\/]/).pop() || "file"),
-            bytes: typeof it.totalBytes === "number" && it.totalBytes >= 0
-              ? it.totalBytes
-              : (typeof it.fileSize === "number" && it.fileSize >= 0 ? it.fileSize : -1),
-            state: it.state || "unknown"
-          }))
-        });
-      } catch (e) {
-        try { sendResponse({ ok: false, files: [] }); } catch (e2) {}
-      }
+        const map = (data && data.downloadJobs) || {};
+        storedIds = Object.entries(map)
+          .filter(([, j]) => j === msg.jobId)
+          .map(([id]) => Number(id))
+          .filter((id) => Number.isFinite(id));
+      } catch (e) { storedIds = []; }
+      const ids = Array.from(new Set([...(memIds || []), ...storedIds]));
+      queryFinalItems(ids.slice(), 30000).then((items) => {
+        try {
+          sendResponse({
+            ok: true,
+            files: items.map((it) => ({
+              name: String((it.filename || "").split(/[\\/]/).pop() || "file"),
+              bytes: typeof it.totalBytes === "number" && it.totalBytes >= 0
+                ? it.totalBytes
+                : (typeof it.fileSize === "number" && it.fileSize >= 0 ? it.fileSize : -1),
+              state: it.state || "unknown"
+            }))
+          });
+        } catch (e) {
+          try { sendResponse({ ok: false, files: [] }); } catch (e2) {}
+        }
+      });
     });
     return true;
   }
@@ -291,11 +307,12 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     const job = (jobId && registry[jobId]) || null;
     const folder = (job && job.folder) || (data.activeFolder && now < (data.captureUntil || 0) ? data.activeFolder : null);
 
-    // One-shot attribution entry: consume it.
+    // v1.9.1: attribution entries are KEPT (not consumed). The persisted
+    // downloadJobs map is SIZE_REPORT's restart-proof job->id index; it is
+    // bounded by the 200-entry cap at write time. Still persist the pruned
+    // registry so expiry is honored promptly.
     if (jobId && data.downloadJobs) {
-      const map = { ...data.downloadJobs };
-      delete map[item.id];
-      chrome.storage.local.set({ downloadJobs: map, jobRegistry: registry });
+      chrome.storage.local.set({ jobRegistry: registry });
     }
 
     if (folder) {
@@ -304,8 +321,11 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
       // prefix our job folder onto it. Normalized (trimmed) so
       // double-fired clicks collapse to uniquify siblings instead of
       // ever overwriting; conflictAction uniquify guarantees no dup loss.
+      // A hostile/degenerate server filename (".", "..", empty) is replaced
+      // so the suggestion can never escape the course folder.
       const rawName = item.filename || item.finalUrl || "material";
-      const baseName = (rawName.split(/[\\/]/).pop() || "material").trim() || "material";
+      let baseName = (rawName.split(/[\\/]/).pop() || "material").trim() || "material";
+      if (baseName === "." || baseName === "..") baseName = "material";
       try {
         const k = `${folder}/${baseName.toLowerCase()}`;
         seenJobFiles.add(k);

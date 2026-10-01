@@ -1,37 +1,43 @@
-/* VIT Bulk Material Downloader — v1.8.3 reskin.
+/* VIT Bulk Material Downloader — v1.10 visual rethink.
    Token block: every value below traces back to :root. One type ratio,
-   one 4px space scale, one ink ramp, one accent (VIT navy), one radius. */
+   one 4px space scale, one ink ramp, one accent (VIT navy), two radii.
+   Contrast pass: body text ≥7:1, meta ≥4.5:1 on surfaces. */
 
 :root {
   /* TYPE — system stack for UI chrome; tabular numerals wherever counts align */
   --font-text: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  --step-h: 15px;   /* header title */
-  --step-0: 13px;   /* body */
+  --step-h: 16px;   /* header title */
+  --step-0: 13px;   /* body / row titles */
   --step--1: 12px;  /* controls */
   --step--2: 11px;  /* meta / captions */
-  --label: 11px;    /* section labels (uppercase) */
+  --label: 10px;    /* section labels (uppercase, tracked) */
 
   /* SPACE — 4px base, multiples only */
-  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px;
 
   /* COLOR — paper base, ink ramp, VIT navy accent, status reserved */
-  --base: #f4f6fb;
+  --base: #eef1f7;
   --surface: #ffffff;
-  --ink: #141a26;
-  --ink-2: #4b5563;
-  --ink-3: #8a94a6;
-  --line: #dfe4ee;
+  --surface-2: #f7f9fd;
+  --ink: #131927;
+  --ink-2: #3f4756;
+  --ink-3: #5b6472;
+  --line: #d9dfee;
+  --line-soft: #e9edf5;
   --accent: #1c3f8c;
   --accent-deep: #16336f;
-  --accent-soft: #e8edf8;
+  --accent-soft: #e5ebf9;
+  --accent-ghost: #f2f5fc;
   --ok: #166534;
   --ok-bg: #dcfce7;
   --warn: #92400e;
   --warn-bg: #fef3c7;
   --bad: #a12626;
+  --bad-bg: #fdecec;
 
   /* FORM */
   --radius: 8px;
+  --radius-sm: 6px;
 
   /* MOTION */
   --dur: 120ms;
@@ -42,19 +48,19 @@
 
 body {
   margin: 0;
-  width: 380px;
-  max-height: 560px;
+  width: 400px;
+  max-height: 600px;
   font-family: var(--font-text);
   font-size: var(--step-0);
   color: var(--ink);
   background: var(--base);
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ---------- header ---------- */
 
 header {
-  background: var(--accent);
-  border-bottom: 2px solid var(--accent-deep);
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-deep) 100%);
   color: #fff;
   padding: var(--s3) var(--s4);
 }
@@ -69,7 +75,7 @@ header h1 {
 main {
   padding: var(--s4) var(--s4) var(--s2);
   overflow-y: auto;
-  max-height: 500px;
+  max-height: 540px;
 }
 
 /* ---------- states ---------- */
@@ -82,7 +88,14 @@ main {
 
 .error-text {
   color: var(--bad);
+  background: var(--bad-bg);
+  border: 1px solid #f3c2c2;
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
   margin-bottom: var(--s3);
+  text-align: left;
+  font-size: var(--step--1);
+  line-height: 1.5;
 }
 
 .hidden { display: none !important; }
@@ -97,21 +110,21 @@ main {
   display: block;
   font-size: var(--label);
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   margin-bottom: var(--s1);
   color: var(--ink-2);
 }
 
 .readonly-box {
-  background: var(--accent-soft);
+  background: var(--accent-ghost);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: var(--s2);
+  padding: var(--s2) var(--s3);
   color: var(--ink);
   font-size: var(--step--1);
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 input[type="text"],
@@ -157,6 +170,29 @@ select:focus {
   margin-bottom: 0;
 }
 
+.filters .full {
+  flex: 1 1 100%;
+  margin-bottom: 0;
+}
+
+input[type="search"] {
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: 1px solid #cbd2df;
+  border-radius: var(--radius);
+  font-size: var(--step--1);
+  font-family: var(--font-text);
+  color: var(--ink);
+  background: var(--surface);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+input[type="search"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .filters .align-end {
   display: flex;
   align-items: flex-end;
@@ -180,6 +216,59 @@ select:focus {
   font-weight: 700;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- faculty quick chips ---------- */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+
+.chips:empty { display: none; }
+
+.chip {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  border-radius: 999px;
+  padding: var(--s1) var(--s2);
+  font-size: var(--step--2);
+  font-weight: 600;
+  font-family: var(--font-text);
+  font-variant-numeric: tabular-nums;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.chip:hover {
+  background: var(--accent-ghost);
+  border-color: var(--accent);
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.chip[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent-deep);
+  color: #fff;
+}
+
+/* ---------- selection presets ---------- */
+
+.presets {
+  display: flex;
+  gap: var(--s2);
+  margin: 0 0 var(--s2);
+}
+
+.presets .btn.link {
+  flex: 1 1 0;
+  min-height: 30px;
 }
 
 /* ---------- history toggles: segmented pill row, pinned while scrolling --- */
@@ -210,7 +299,7 @@ select:focus {
   color: var(--ink-2);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   text-align: center;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
@@ -236,48 +325,120 @@ select:focus {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  max-height: 210px;
+  max-height: 300px;
   overflow-y: auto;
 }
 
 .material-row {
   display: flex;
-  gap: var(--s2);
+  gap: var(--s3);
   align-items: flex-start;
-  padding: var(--s2) var(--s3);
-  border-bottom: 1px solid #eef0f4;
+  padding: var(--s3);
+  border-bottom: 1px solid var(--line-soft);
   cursor: pointer;
-  transition: background var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 
 .material-row:last-child { border-bottom: none; }
 
-.material-row:hover { background: #f2f5fb; }
+.material-row:hover { background: var(--surface-2); }
 
-.material-row:has(input:checked) { background: var(--accent-soft); }
+.material-row:has(input:checked) {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.material-row:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Generic document glyph: pure CSS (no emoji, no extra markup). */
+.material-row::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 28px;
+  margin-top: 1px;
+  border-radius: 3px 7px 3px 3px;
+  background:
+    linear-gradient(135deg, transparent 6px, var(--accent-soft) 6px),
+    var(--accent-ghost);
+  border: 1px solid var(--line);
+}
+
+.material-row:has(input:checked)::before {
+  background:
+    linear-gradient(135deg, transparent 6px, var(--accent) 6px),
+    var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Live per-file queue status: flex-end marker, no markup needed. */
+.material-row::after {
+  content: "";
+  flex: none;
+  margin-left: auto;
+  align-self: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.material-row.st-active::after {
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+.material-row.st-done::after {
+  content: "✓";
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.material-row.st-fail::after {
+  content: "!";
+  color: var(--bad);
+  background: var(--bad-bg);
+}
+
+.material-row.st-skip::after {
+  content: "–";
+  color: var(--ink-3);
+  background: var(--line-soft);
+}
 
 .material-row input[type="checkbox"] {
-  margin-top: 2px;
-  width: 16px;
-  height: 16px;
+  margin-top: 5px;
+  width: 18px;
+  height: 18px;
   flex: none;
   accent-color: var(--accent);
   cursor: pointer;
 }
 
+.material-row > div:last-child { min-width: 0; }
+
 .material-row .meta {
   font-size: var(--step--2);
   color: var(--ink-3);
-  margin-top: 2px;
+  margin-top: 3px;
   font-variant-numeric: tabular-nums;
-  line-height: 1.45;
+  line-height: 1.5;
+  overflow-wrap: break-word;
 }
 
 .material-row .title {
   font-size: var(--step-0);
   font-weight: 600;
   color: var(--ink);
-  line-height: 1.35;
+  line-height: 1.4;
+  overflow-wrap: break-word;
 }
 
 .material-row.no-docs {
@@ -445,6 +606,45 @@ select:focus {
   padding: var(--s2);
 }
 
+.preview-folders,
+.preview-files {
+  margin: 0 0 var(--s2);
+  padding: 0;
+  list-style: none;
+  font-size: var(--step--1);
+}
+
+.preview-folders li {
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 2px;
+  overflow-wrap: break-word;
+}
+
+.preview-files {
+  max-height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: var(--s2) var(--s3);
+}
+
+.preview-files li {
+  color: var(--ink);
+  margin-bottom: 2px;
+  overflow-wrap: break-word;
+}
+
+.preview-files li.more {
+  color: var(--ink-3);
+}
+
+.preview-files li.collision {
+  color: var(--warn);
+  font-weight: 600;
+}
+
 .modal-actions {
   display: flex;
   gap: var(--s2);
@@ -482,6 +682,8 @@ select:focus {
   background: var(--accent);
   color: #fff;
   width: 100%;
+  min-height: 40px;
+  font-size: var(--step-0);
 }
 
 .btn.primary:hover { background: var(--accent-deep); }
@@ -491,6 +693,28 @@ select:focus {
   cursor: not-allowed;
   transform: none;
 }
+
+/* Loading state: spinner + locked, set via JS during the queue. */
+.btn.primary.loading {
+  background: var(--accent-deep);
+  cursor: wait;
+  transform: none;
+}
+
+.btn.primary.loading::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: var(--s2);
+  vertical-align: -1px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .btn.secondary {
   background: #e5e9f2;
@@ -519,4 +743,50 @@ select:focus {
 .btn.link:hover {
   background: var(--accent-soft);
   border-color: var(--accent);
+}
+
+/* ---------- error checklist / coach / diagnostics extras ---------- */
+
+.error-checklist {
+  text-align: left;
+  font-size: var(--step--1);
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  margin-bottom: var(--s3);
+  line-height: 1.5;
+}
+
+.error-checklist p {
+  margin: 0 0 var(--s1);
+  font-weight: 700;
+}
+
+.error-checklist ul {
+  margin: 0;
+  padding-left: var(--s4);
+}
+
+.coach-steps {
+  margin: 0 0 var(--s2);
+  padding-left: var(--s4);
+  font-size: var(--step--1);
+  line-height: 1.55;
+  color: var(--ink);
+}
+
+.coach-steps li { margin-bottom: var(--s2); }
+
+/* ---------- reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .btn:active { transform: none; }
 }

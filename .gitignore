@@ -1,0 +1,10 @@
+# Dependencies (extension ships with zero deps; test runners install their own)
+node_modules/
+package-lock.json
+
+# Tooling configs live outside the shipped extension
+.opencode/
+
+# macOS / editor noise
+.DS_Store
+*.log

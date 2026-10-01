@@ -1,6 +1,10 @@
 let currentState = null;
 let selectedKeys = new Set();
 let lastCourseText = null;
+// loadState serialization: concurrent loads (auto-load + Retry racing)
+// must not interleave scans and desync rows from selection/DOM.
+let loadRunning = false;
+let loadSeq = 0;
 const LARGE_BATCH_THRESHOLD = 10;
 
 // Phase 2: local download history + folder template.
@@ -10,7 +14,10 @@ const LARGE_BATCH_THRESHOLD = 10;
 let downloadedKeys = new Map();
 let showOnlyNew = false;
 let skipExisting = true;
-let folderTemplate = "course"; // "course" | "semester-course"
+let folderTemplate = "course"; // "course" | "semester-course" | "semester-course-faculty"
+let coachSeen = false; // first-run tour; persisted in storage.local
+let coachShownThisSession = false; // never resurrect via Refresh mid-session
+let lastDiagReport = null; // last diagnostics payload, for Copy report
 const HISTORY_LIMIT = 2000;
 
 const el = (id) => document.getElementById(id);
@@ -38,14 +45,15 @@ function storageSet(obj) {
 }
 
 async function loadPhase2State() {
-  const data = await storageGet(["downloadHistory", "folderTemplate", "safeMode"]);
+  const data = await storageGet(["downloadHistory", "folderTemplate", "safeMode", "coachSeen"]);
   const hist = data.downloadHistory;
   if (hist && typeof hist === "object") {
     downloadedKeys = new Map(Object.entries(hist));
   }
-  if (data.folderTemplate === "semester-course" || data.folderTemplate === "course") {
+  if (data.folderTemplate === "course" || data.folderTemplate === "semester-course" || data.folderTemplate === "semester-course-faculty") {
     folderTemplate = data.folderTemplate;
   }
+  coachSeen = data.coachSeen === true;
   const tmpl = el("folderTemplate");
   if (tmpl) tmpl.value = folderTemplate;
   const skipBox = el("skipExistingBox");
@@ -82,12 +90,80 @@ function courseTextToSemester(text) {
 }
 
 // Folder input holds the course folder; the template decides the full path.
-function resolveFolderPath(courseFolder, courseText) {
+// Preview sanitization mirrors background.js sanitizeFolderPath exactly so the
+// preview shows where Chrome will actually save (invalid chars stripped,
+// traversal collapsed, capped at 2 levels). ARM folderName itself is still
+// sanitized authoritatively in the background; this is display-only.
+function sanitizeFolderName(name) {
+  const cleaned = (name || "VIT Downloads")
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120)
+    .replace(/[. ]+$/g, "")
+    .trim();
+  return cleaned || "VIT Downloads";
+}
+
+function sanitizeFolderPath(path) {
+  const segs = String(path || "")
+    .split("/")
+    .map((s) => sanitizeFolderName(s))
+    .filter((s) => s && s !== "." && s !== ".." && s !== "-" && s !== "VIT Downloads");
+  // Cap at 3 levels ("Semester/Course/Faculty"). Traversal/empty/excess
+  // segments are dropped so a crafted name can never escape Downloads/.
+  const kept = segs.slice(0, 3);
+  if (!kept.length) return "VIT Downloads";
+  return kept.join("/");
+}
+
+function resolveFolderPath(courseFolder, courseText, facultyName) {
   const base = (courseFolder || "").trim() || (currentState && currentState.folderNameSuggestion) || "VIT Downloads";
+  const sem = courseTextToSemester(courseText || (currentState && currentState.courseText));
+  if (folderTemplate === "semester-course-faculty") {
+    // No faculty passed (e.g. preview with nothing selected): base path only.
+    // Grouping (groupKeysByFaculty) always supplies a concrete faculty string.
+    if (sem && sem !== base) {
+      // Flatten "/" inside the faculty name: sanitizeFolderPath splits on
+      // "/" first, so an unflattened "A/B" would become an extra level.
+      const fac = (facultyName || "").replace(/\//g, "-").replace(/\s+/g, " ").trim();
+      if (fac && fac !== base) return `${sem}/${base}/${fac}`;
+      return `${sem}/${base}`;
+    }
+    return base;
+  }
   if (folderTemplate === "semester-course") {
-    const sem = courseTextToSemester(courseText || (currentState && currentState.courseText));
     if (sem && sem !== base) return `${sem}/${base}`;
   }
+  return base;
+}
+
+// Semester/Course/Faculty template: one subfolder per faculty, so a batch
+// spanning several faculty splits into one download group each. Pure
+// function of currentState (no DOM) for testability.
+function groupKeysByFaculty(keys) {
+  const byKey = new Map(((currentState && currentState.rows) || []).map((r) => [r.key, r]));
+  const groups = new Map();
+  for (const k of keys || []) {
+    const row = byKey.get(k);
+    const fac = ((row && row.facultyName) || "").replace(/\s+/g, " ").trim() || "Unknown faculty";
+    if (!groups.has(fac)) groups.set(fac, []);
+    groups.get(fac).push(k);
+  }
+  return groups;
+}
+
+function distinctFaculties(keys) {
+  return Array.from(groupKeysByFaculty(keys).keys());
+}
+
+// Display folder for preview/progress text. Single faculty -> concrete path;
+// mixed/empty selection -> base path (callers add the per-faculty note).
+function previewFolder(courseFolder, keys) {
+  const base = resolveFolderPath(courseFolder);
+  if (folderTemplate !== "semester-course-faculty") return base;
+  const facs = distinctFaculties(keys);
+  if (facs.length === 1) return resolveFolderPath(courseFolder, undefined, facs[0]);
   return base;
 }
 
@@ -99,7 +175,13 @@ function updateFolderPreview() {
     preview.textContent = "";
     return;
   }
-  preview.textContent = `Files will save to Downloads/${resolveFolderPath(courseFolder)}/`;
+  let dest = previewFolder(courseFolder, Array.from(selectedKeys));
+  try { dest = sanitizeFolderPath(dest); } catch (e) { /* preview falls back to raw path */ }
+  if (folderTemplate === "semester-course-faculty" && distinctFaculties(Array.from(selectedKeys)).length !== 1) {
+    preview.textContent = `Files will save to Downloads/${dest}/ — one subfolder per faculty.`;
+    return;
+  }
+  preview.textContent = `Files will save to Downloads/${dest}/`;
 }
 
 function showLoading(text) {
@@ -121,6 +203,18 @@ function showReady() {
   el("loadingState").classList.add("hidden");
   el("errorState").classList.add("hidden");
   el("readyState").classList.remove("hidden");
+  // First-run tour: once per profile AND once per popup session, so Refresh
+  // never resurrects it mid-session.
+  if (!coachSeen && !coachShownThisSession) {
+    coachShownThisSession = true;
+    el("coachOverlay").classList.remove("hidden");
+  }
+}
+
+function hideCoach() {
+  el("coachOverlay").classList.add("hidden");
+  coachSeen = true;
+  storageSet({ coachSeen: true });
 }
 
 async function getActiveVtopTab() {
@@ -147,24 +241,36 @@ async function ensureContentScript(tabId) {
 }
 
 async function loadState() {
+  // Serialize: a second load (double-clicked Retry, auto-load + manual
+  // retry racing) must not interleave scans and desync rows/selection.
+  if (loadRunning) return;
+  loadRunning = true;
+  const mySeq = ++loadSeq;
+  const alive = () => mySeq === loadSeq && loadRunning;
   showLoading("Setting \"Show entries\" to the max and reading the table…");
   const tab = await getActiveVtopTab();
+  if (!alive()) return;
   if (!tab) {
     showError("Open your VTOP Course Page tab (vtop.vit.ac.in) first, with a course selected, then reopen this popup.");
+    loadRunning = false;
     return;
   }
 
   let response = await sendMessageToTab(tab.id, { type: "GET_STATE" });
+  if (!alive()) return;
   if (!response) {
     await ensureContentScript(tab.id);
+    if (!alive()) return;
     response = await sendMessageToTab(tab.id, { type: "GET_STATE" });
   }
+  if (!alive()) return;
 
   if (!response || !response.ok) {
     showError(
       (response && response.error) ||
         "Couldn't read the course or materials table on this page. Make sure the Course Materials table is visible, then click Retry."
     );
+    loadRunning = false;
     return;
   }
 
@@ -183,6 +289,7 @@ async function loadState() {
     currentState._isNewCourse = false;
   }
 
+  loadRunning = false;
   renderReady();
 }
 
@@ -205,7 +312,9 @@ function getFilters() {
   const toVal = el("dateTo").value;
   const from = fromVal ? new Date(fromVal + "T00:00:00") : null;
   const to = toVal ? new Date(toVal + "T23:59:59") : null;
-  return { faculty, from, to };
+  const searchBox = el("searchBox");
+  const search = searchBox ? searchBox.value.trim().toLowerCase() : "";
+  return { faculty, from, to, search };
 }
 
 function rowMatchesFilters(row, filters) {
@@ -215,6 +324,10 @@ function rowMatchesFilters(row, filters) {
   // backward compatibility with states saved before hasDownload existed.
   if (row.hasDownload === false) return false;
   if (filters.faculty !== "__ALL__" && row.facultyName !== filters.faculty) return false;
+  if (filters.search) {
+    const hay = `${row.title || ""} ${row.facultyName || ""}`.toLowerCase();
+    if (!hay.includes(filters.search)) return false;
+  }
   const rowDate = parseDmy(row.dateText);
   if (filters.from && rowDate && rowDate < filters.from) return false;
   if (filters.to && rowDate && rowDate > filters.to) return false;
@@ -269,8 +382,44 @@ function renderReady() {
   if (!isNewCourse && prevFaculty && (prevFaculty === "__ALL__" || facultyNames.includes(prevFaculty))) {
     facultySelect.value = prevFaculty;
   }
+  renderChips(facultyNames);
 
   renderList();
+}
+
+// Faculty quick chips: All + top faculties by row count. Single-select,
+// mirrors the dropdown (same filter path, same tests).
+function renderChips(facultyNames) {
+  const box = el("facultyChips");
+  if (!box) return;
+  box.innerHTML = "";
+  const counts = new Map();
+  for (const r of currentState.rows) {
+    const f = r.facultyName || "Unknown faculty";
+    counts.set(f, (counts.get(f) || 0) + 1);
+  }
+  const top = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name]) => name);
+  const current = el("facultyFilter").value || "__ALL__";
+  const mk = (value, label) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.textContent = label;
+    b.setAttribute("aria-pressed", value === current ? "true" : "false");
+    b.addEventListener("click", () => {
+      el("facultyFilter").value = value;
+      renderChips(facultyNames);
+      renderList();
+    });
+    box.appendChild(b);
+  };
+  mk("__ALL__", "All");
+  // Keep dropdown-only faculties reachable: chips show the top 5, the
+  // dropdown still lists everything.
+  for (const name of top) mk(name, `${name} · ${counts.get(name)}`);
 }
 
 function renderList() {
@@ -282,14 +431,26 @@ function renderList() {
   const matching = visibleRows.filter((r) => rowMatchesFilters(r, filters));
   const matchingDocs = matching.reduce((sum, r) => sum + (r.docCount || 0), 0);
   const newCount = matching.filter((r) => !downloadedKeys.has(r.key)).length;
+  // Repeated-title groups among matches: same title usually means
+  // same-named files on disk → Chrome saves numbered copies.
+  const dupGroups = new Set();
+  for (const r of matching) {
+    if ((r.dupTotal || 0) > 1) dupGroups.add([r.title, r.facultyName, r.dateText].join("||"));
+  }
 
   // Terminology: one table row = one file = one download action.
   // docCount = VTOP's own "N (Document)" badge (unreliable, info only).
   el("matchCount").textContent =
-    `${matching.length} file${matching.length === 1 ? "" : "s"} · ${matchingDocs} document${matchingDocs === 1 ? "" : "s"} · ${newCount} new`;
+    `${matching.length} file${matching.length === 1 ? "" : "s"} · ${matchingDocs} document${matchingDocs === 1 ? "" : "s"} · ${newCount} new` +
+    (dupGroups.size ? ` · ${dupGroups.size} repeated title${dupGroups.size === 1 ? "" : "s"}` : "");
 
   if (!visibleRows.length) {
     container.innerHTML = '<div class="empty-note">No downloadable materials found in this course yet.</div>';
+    updateSelectedCount();
+    return;
+  }
+  if (!matching.length) {
+    container.innerHTML = '<div class="empty-note">No materials match these filters. Try widening the dates or clearing the search.</div>';
     updateSelectedCount();
     return;
   }
@@ -298,6 +459,7 @@ function renderList() {
     const matches = rowMatchesFilters(row, filters);
     const wrap = document.createElement("label");
     wrap.className = "material-row";
+    try { wrap.dataset.key = row.key; } catch (e) { /* status hooks are best-effort */ }
     if (!matches) wrap.style.display = "none";
 
     const cb = document.createElement("input");
@@ -331,6 +493,67 @@ function renderList() {
 function updateSelectedCount() {
   const n = selectedKeys.size;
   el("downloadBtn").textContent = n ? `Download selected (${n})` : "Download selected";
+  el("downloadBtn").disabled = queueRunning || n === 0;
+  const hint = el("selectHint");
+  if (hint) hint.textContent = n === 0 ? "Tick materials above to enable download." : "";
+}
+
+// Selection presets operate on currently visible (filter-matching) rows.
+// Date presets compare calendar days; undated rows are left alone.
+function startOfToday() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function selectRecent(days) {
+  if (!currentState) return;
+  const filters = getFilters();
+  const cutoff = startOfToday();
+  cutoff.setDate(cutoff.getDate() - (days - 1));
+  currentState.rows.filter((r) => rowMatchesFilters(r, filters)).forEach((r) => {
+    const d = parseDmy(r.dateText);
+    if (d && d >= cutoff) selectedKeys.add(r.key);
+  });
+  renderList();
+}
+
+function invertVisible() {
+  if (!currentState) return;
+  const filters = getFilters();
+  currentState.rows.filter((r) => rowMatchesFilters(r, filters)).forEach((r) => {
+    if (selectedKeys.has(r.key)) selectedKeys.delete(r.key);
+    else selectedKeys.add(r.key);
+  });
+  renderList();
+}
+
+// Live per-file queue status markers (st-active/st-done/st-fail/st-skip).
+// Row keys embed arbitrary VTOP text, so lookup uses CSS.escape.
+function rowLabelForKey(key) {
+  try {
+    const list = document.querySelectorAll(".material-row");
+    for (const lab of list) {
+      if (lab.dataset && lab.dataset.key === key) return lab;
+    }
+  } catch (e) { /* fall through to selector */ }
+  try {
+    return document.querySelector(`.material-row[data-key="${CSS.escape(key)}"]`);
+  } catch (e) {
+    return null;
+  }
+}
+
+function setRowStatus(key, status) {
+  const lab = rowLabelForKey(key);
+  if (!lab) return;
+  lab.classList.remove("st-active", "st-done", "st-fail", "st-skip");
+  if (status) lab.classList.add(`st-${status}`);
+}
+
+function clearRowStatus() {
+  document.querySelectorAll(".material-row.st-active,.material-row.st-done,.material-row.st-fail,.material-row.st-skip")
+    .forEach((lab) => lab.classList.remove("st-active", "st-done", "st-fail", "st-skip"));
 }
 
 function escapeHtml(str) {
@@ -400,7 +623,8 @@ function updateQueueButtons() {
   const running = queueRunning;
   el("queueBtns").classList.toggle("hidden", !running);
   el("pauseBtn").textContent = queuePaused ? "Resume" : "Pause";
-  el("downloadBtn").disabled = running;
+  el("downloadBtn").disabled = running || selectedKeys.size === 0;
+  el("downloadBtn").classList.toggle("loading", running);
 }
 
 function renderProgress(done, total, current, skippedCount) {
@@ -460,17 +684,23 @@ function renderSizeLines(lines) {
 
 // v1.8.2: ask the background for final file sizes (the only point where
 // sizes are knowable) and render the identical-vs-different report.
-// Best-effort: any failure just leaves the normal summary in place.
-async function fetchAndRenderSizeReport(jobId) {
-  if (!jobId) return;
+// v1.9.0: one job per faculty group — query each and merge. Best-effort: any
+// failure just leaves the normal summary in place.
+async function fetchAndRenderSizeReport(jobIds) {
+  const ids = Array.isArray(jobIds) ? jobIds : (jobIds ? [jobIds] : []);
+  if (!ids.length) return;
   const prev = el("progressText").textContent;
   try {
     el("progressText").textContent = `${prev} Checking file sizes…`;
-    const resp = await Promise.race([
-      chrome.runtime.sendMessage({ type: "SIZE_REPORT", jobId }),
-      new Promise((res) => setTimeout(() => res(null), 40000))
-    ]);
-    const lines = summarizeSizes(resp && resp.files);
+    const all = [];
+    for (const jobId of ids) {
+      const resp = await Promise.race([
+        chrome.runtime.sendMessage({ type: "SIZE_REPORT", jobId }),
+        new Promise((res) => setTimeout(() => res(null), 40000))
+      ]);
+      if (resp && Array.isArray(resp.files)) all.push(...resp.files);
+    }
+    const lines = summarizeSizes(all);
     renderSizeLines(lines);
     el("progressText").textContent = lines.length ? `${prev} · ${lines.length} file size${lines.length === 1 ? "" : "s"} checked` : prev;
   } catch (e) {
@@ -482,6 +712,51 @@ function titleForKey(key) {
   if (!currentState) return "(unknown item)";
   const row = currentState.rows.find((r) => r.key === key);
   return row ? row.title : "(unknown item)";
+}
+
+// Staleness guard: cheap live read of the VTOP course dropdown (no table
+// scan). Returns undefined when unreachable so old content scripts never
+// block a batch.
+async function liveCourseText() {
+  try {
+    const resp = await sendMessageToTab(currentState._tabId, { type: "GET_COURSE" });
+    if (!resp) return undefined;
+    return resp.courseText || null;
+  } catch (e) {
+    return undefined;
+  }
+}
+
+// Phase 4: copyable diagnostics report for bug reports. Clipboard API
+// first, hidden-textarea fallback; honest feedback either way.
+async function copyDiagReport() {
+  const btn = el("diagCopyBtn");
+  const say = (t) => { btn.textContent = t; };
+  const text = lastDiagReport || "diagnostics unavailable";
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      say("Copied ✓");
+      setTimeout(() => say("Copy report"), 2000);
+      return;
+    }
+    throw new Error("no clipboard API");
+  } catch (e) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      say(ok ? "Copied ✓" : "Copy failed");
+    } catch (e2) {
+      say("Copy failed");
+    }
+    setTimeout(() => say("Copy report"), 2000);
+  }
 }
 
 // Phase 4: read-only self check. Never clicks VTOP controls.
@@ -541,6 +816,20 @@ async function runDiagnostics() {
   }
   add(bgOk, bgOk ? "Background worker reachable (capture channel ok)" : "Background worker unreachable");
   add(true, `Extension v${chrome.runtime.getManifest ? chrome.runtime.getManifest().version : "?"}`);
+  try {
+    lastDiagReport = JSON.stringify({
+      extension: (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || "?",
+      url: (tab && tab.url) || null,
+      course: (state && state.courseText) || null,
+      rows: (state && state.rows && state.rows.length) || 0,
+      tableStrategy: (state && state.tableStrategy) || null,
+      downloadButtons: (diag && diag.diag && diag.diag.downloadButtons) || 0,
+      log: ((diag && diag.diag && diag.diag.log) || []).map((e) => `${e.strategy} — ${e.detail}`),
+      at: new Date().toISOString()
+    }, null, 2);
+  } catch (e) {
+    lastDiagReport = null;
+  }
 }
 
 // Phase 4: experimental verified page sweep. One Next per ADVANCE_PAGE,
@@ -565,6 +854,14 @@ async function collectAllPages() {
   let pages = 1;
   let lastReason = "done";
   for (;;) {
+    // Iteration 4 cap guard (REQUIREMENTS J): SWEEP_MAX_PAGES=20 means at
+    // most 20 pages visited total (1 initial + 19 advances). Check BEFORE
+    // clicking Next so the 21st page is never visited. The post-increment
+    // pages> check below remains as a backstop.
+    if (pages >= SWEEP_MAX_PAGES) {
+      lastReason = "cap";
+      break;
+    }
     let adv = null;
     try {
       adv = await sendMessageToTab(tab.id, { type: "ADVANCE_PAGE" });
@@ -596,13 +893,17 @@ async function collectAllPages() {
   }
 }
 
-function filterSummary() {  const faculty = el("facultyFilter").value;
+function filterSummary() {
+  const faculty = el("facultyFilter").value;
   const fromVal = el("dateFrom").value;
   const toVal = el("dateTo").value;
+  const searchBox = el("searchBox");
+  const search = searchBox ? searchBox.value.trim() : "";
   const parts = [];
   parts.push(faculty === "__ALL__" ? "All faculty" : faculty);
   if (fromVal || toVal) parts.push(`${fromVal || "…"} → ${toVal || "…"}`);
   else parts.push("Any date");
+  if (search) parts.push(`“${search}”`);
   return parts.join(" · ");
 }
 
@@ -613,6 +914,45 @@ function showPreview(folderName, keys) {
   el("previewFilters").textContent = filterSummary();
   el("previewCount").textContent = `${keys.length} file${keys.length === 1 ? "" : "s"} · ${docs} document${docs === 1 ? "" : "s"}`;
   el("previewDest").textContent = `Downloads/${folderName}/`;
+  // Per-faculty destination breakdown (faculty template splits the batch).
+  const foldersEl = el("previewFolders");
+  foldersEl.innerHTML = "";
+  const dests = new Map();
+  if (folderTemplate === "semester-course-faculty") {
+    for (const k of keys) {
+      const row = byKey.get(k);
+      const fac = ((row && row.facultyName) || "").trim() || "Unknown faculty";
+      dests.set(fac, (dests.get(fac) || 0) + 1);
+    }
+  } else {
+    dests.set(null, keys.length);
+  }
+  for (const [fac, n] of dests) {
+    const li = document.createElement("li");
+    li.textContent = fac
+      ? `${n} file${n === 1 ? "" : "s"} → Downloads/${resolveFolderPath(el("folderName").value.trim() || currentState.folderNameSuggestion, undefined, fac)}/`
+      : `${n} file${n === 1 ? "" : "s"} → Downloads/${folderName}/`;
+    foldersEl.appendChild(li);
+  }
+  // File sample (first 8) + same-title collision forecast. Server filenames
+  // are unknowable pre-download, so collisions are estimated from duplicate
+  // titles — same title usually means same-named files → name (1) siblings.
+  const filesEl = el("previewFiles");
+  filesEl.innerHTML = "";
+  keys.slice(0, 8).forEach((k) => {
+    const row = byKey.get(k) || {};
+    const li = document.createElement("li");
+    const dup = (row.dupTotal || 0) > 1;
+    li.textContent = (row.title || "(unknown item)") + (dup ? ` — same title ×${row.dupTotal}, expect numbered copies` : "");
+    if (dup) li.className = "collision";
+    filesEl.appendChild(li);
+  });
+  if (keys.length > 8) {
+    const li = document.createElement("li");
+    li.className = "more";
+    li.textContent = `…and ${keys.length - 8} more.`;
+    filesEl.appendChild(li);
+  }
   const warn = el("previewWarning");
   if (keys.length > LARGE_BATCH_THRESHOLD) {
     warn.textContent = `You're about to start ${keys.length} downloads at once — that's a lot of storage/bandwidth. You can close this popup; downloads continue in the background.`;
@@ -656,7 +996,7 @@ async function handleDownload() {
   }
 
   const courseFolder = el("folderName").value.trim() || currentState.folderNameSuggestion;
-  const folderName = resolveFolderPath(courseFolder);
+  const folderName = previewFolder(courseFolder, keys);
   resetProgressUI();
   showPreview(folderName, keys);
 }
@@ -668,6 +1008,7 @@ let queueCancel = false;
 let queueJobId = null;
 let lastSkippedKeys = [];
 let safeMode = false;
+let eventsWired = false;
 const MAX_ATTEMPTS = 3;
 
 const queueSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -691,6 +1032,7 @@ async function startDownload() {
   if (skipExisting) {
     alreadySkipped = keys.filter((k) => downloadedKeys.has(k));
     keys = keys.filter((k) => !downloadedKeys.has(k));
+    alreadySkipped.forEach((k) => setRowStatus(k, "skip"));
     if (!keys.length) {
       setProgress(
         `All ${alreadySkipped.length} selected item${alreadySkipped.length === 1 ? " was" : "s were"} already downloaded. Uncheck “Skip already downloaded” to fetch again.`
@@ -704,14 +1046,59 @@ async function startDownload() {
 
   el("downloadBtn").disabled = true;
   resetProgressUI();
+  clearRowStatus();
+
+  // Staleness guard: refuse to fire 74 ghost clicks when the VTOP course
+  // changed (or paged away) underneath the scanned state. Aborts ONLY on
+  // positive evidence (a different non-empty course string) — an unknown
+  // answer never blocks a batch; the leading-miss abort backstops the rest.
+  const liveCourse = await liveCourseText();
+  if (typeof liveCourse === "string" && liveCourse && liveCourse !== currentState.courseText) {
+    setProgress(
+      "The course on the VTOP page changed since this list was read — click Refresh to rescan, then select again. Nothing was downloaded."
+    );
+    renderSkipList([]);
+    el("downloadBtn").disabled = false;
+    updateSelectedCount();
+    return;
+  }
+
   renderProgress(0, keys.length, "Preparing…", 0);
 
   const armDuration = Math.max(keys.length * 2400 + 30000, 60000) * (safeMode ? 2 : 1);
-  const armResp = await chrome.runtime
-    .sendMessage({ type: "ARM_CAPTURE", folderName, durationMs: armDuration })
-    .catch(() => null);
-  queueJobId = (armResp && armResp.jobId) || null;
-  const finishedJobId = queueJobId; // finally-block nulls queueJobId; report needs it
+  // v1.9.0: faculty template splits the batch into one folder group per
+  // faculty. Flattened into an ordered queue; the loop re-ARMs whenever the
+  // target folder changes (single-group batches ARM exactly once, as before).
+  let plan = [{ folder: folderName, keys }];
+  if (folderTemplate === "semester-course-faculty") {
+    plan = Array.from(groupKeysByFaculty(keys), ([fac, ks]) => ({
+      folder: resolveFolderPath(courseFolder, undefined, fac),
+      keys: ks,
+    }));
+  }
+  const queue = [];
+  for (const entry of plan) for (const key of entry.keys) queue.push({ key, folder: entry.folder });
+  const finishedJobIds = []; // every job ARM'd this run; each gets a size report
+  let armedFolder = null;
+  const armFor = async (folder) => {
+    const armResp = await chrome.runtime
+      .sendMessage({ type: "ARM_CAPTURE", folderName: folder, durationMs: armDuration })
+      .catch(() => null);
+    queueJobId = (armResp && armResp.jobId) || null;
+    if (queueJobId) finishedJobIds.push(queueJobId);
+    armedFolder = folder;
+  };
+  const disarmCurrent = async () => {
+    try {
+      const p = chrome.runtime.sendMessage({ type: "DISARM_CAPTURE", jobId: queueJobId });
+      if (p && typeof p.catch === "function") await p.catch(() => {});
+      else if (p && typeof p.then === "function") await p;
+    } catch (e) {
+      // SW unavailable or popup closing - capture auto-expires via timestamp
+    }
+    queueJobId = null;
+    armedFolder = null;
+  };
 
   // Keep-alive for large batches: refresh capture expiry every 20s while the
   // content script works through the queue. Uses the existing EXTEND_CAPTURE
@@ -743,6 +1130,7 @@ async function startDownload() {
       const p = msg.progress;
       doneEvents++;
       renderQueueProgress(p.current, doneEvents, totalItems);
+      if (p && p.key) setRowStatus(p.key, p.skipped ? "fail" : "done");
     }
   };
   chrome.runtime.onMessage.addListener(progressListener);
@@ -756,14 +1144,24 @@ async function startDownload() {
   let canceledCount = 0;
   const recordKeys = [];
   let result = null;
+  let batchAborted = null; // set when the page clearly moved on (mass misses)
+  let leadingMisses = 0;
   try {
-    for (const key of keys) {
+    for (let qi = 0; qi < queue.length; qi++) {
+      const item = queue[qi];
+      const key = item.key;
       if (queueCancel) {
         canceledCount++;
         aggregate.skippedDetails.push({ key, title: titleForKey(key), reason: "canceled" });
         aggregate.skipped++;
+        setRowStatus(key, null); // back to neutral; skip list explains why
         continue;
       }
+      if (item.folder !== armedFolder) {
+        if (armedFolder) await disarmCurrent();
+        await armFor(item.folder);
+      }
+      setRowStatus(key, "active");
       while (queuePaused && !queueCancel) {
         setProgress(`Paused — ${titleForKey(key)} waiting…`);
         await queueSleep(400);
@@ -788,7 +1186,9 @@ async function startDownload() {
         if (!queueCancel && attempts < maxTries) await queueSleep(gapMs);
       }
       if (!one || !one.ok) {
-        aggregate.ok = false;
+        // Per-item transport failure: isolated, retryable, must not poison
+        // the whole batch (other keys already downloaded stay recorded and
+        // the run still reports Done with details + Retry skipped).
         aggregate.skippedDetails.push({ key, title: titleForKey(key), reason: "failed" });
         aggregate.skipped++;
         continue;
@@ -797,7 +1197,25 @@ async function startDownload() {
       aggregate.skipped += one.skipped || 0;
       if (Array.isArray(one.skippedDetails)) aggregate.skippedDetails.push(...one.skippedDetails);
       else if (one.skipped) aggregate.skippedDetails.push({ key, title: titleForKey(key), reason: "skipped" });
-      if (!one.skipped) recordKeys.push(key);
+      if (!one.skipped) recordKeys.push({ key, folder: item.folder });
+      // Early abort: three leading not-on-page misses with zero downloads
+      // means the page moved on (course switched, table repaged) — firing
+      // the remaining clicks is pure waste. Report the rest the same way.
+      const missedHere = (one.skippedDetails || []).some((d) => d.reason === "not-on-page");
+      if (missedHere && aggregate.clicked === 0) {
+        leadingMisses++;
+        if (leadingMisses >= 3) {
+          batchAborted = "none of the selected files are on this VTOP page — the course may have changed. Click Refresh to rescan, then retry.";
+          for (let ri = qi + 1; ri < queue.length; ri++) {
+            const rk = queue[ri].key;
+            aggregate.skippedDetails.push({ key: rk, title: titleForKey(rk), reason: "not-on-page" });
+            aggregate.skipped++;
+          }
+          break;
+        }
+      } else if (!missedHere) {
+        leadingMisses = 0;
+      }
       await queueSleep(gapMs);
     }
     // Include canceled count in the progress footer via failed-style note.
@@ -810,13 +1228,7 @@ async function startDownload() {
     } catch (e) {
       // ignore - popup tearing down
     }
-    try {
-      const p = chrome.runtime.sendMessage({ type: "DISARM_CAPTURE", jobId: queueJobId });
-      if (p && typeof p.catch === "function") await p.catch(() => {});
-      else if (p && typeof p.then === "function") await p;
-    } catch (e) {
-      // SW unavailable or popup closing - capture auto-expires via timestamp
-    }
+    if (armedFolder) await disarmCurrent();
     queueRunning = false;
     queueJobId = null;
     updateQueueButtons();
@@ -829,7 +1241,7 @@ async function startDownload() {
     const totalSkipped = result.skipped + alreadySkipped.length;
     renderProgress(keys.length + alreadySkipped.length, keys.length + alreadySkipped.length, "Finished", totalSkipped);
     renderSkipList(allDetails);
-    await fetchAndRenderSizeReport(finishedJobId);
+    await fetchAndRenderSizeReport(finishedJobIds);
     let skipNote = ".";
     if (totalSkipped) {
       const noControl = allDetails.filter((d) => d.reason === "no-control").length;
@@ -854,12 +1266,15 @@ async function startDownload() {
       skipNote = ` (${parts.join("; ")} — see details above.)`;
     }
     setProgress(
-      `${result.canceledCount ? "Stopped" : "Done"} — ${result.clicked} download${result.clicked === 1 ? "" : "s"} saved to Downloads/${folderName}/` + skipNote
+      (batchAborted ? `Stopped early — ${batchAborted} ` : `${result.canceledCount ? "Stopped" : "Done"} — `) +
+      `${result.clicked} download${result.clicked === 1 ? "" : "s"} saved to Downloads/${folderName}/` +
+      (folderTemplate === "semester-course-faculty" ? " (one subfolder per faculty)" : "") + skipNote
     );
     notifyDownloadComplete({ folderName, clicked: result.clicked, skipped: totalSkipped });
     // Phase 2+3: record items the queue marked done (per-item, not batch).
+    // v1.9.0: folder is per group, so history re-download matching stays exact.
     await recordDownloads(
-      recordKeys.map((k) => ({ key: k, course: currentState.courseText, folder: folderName, title: titleForKey(k) }))
+      recordKeys.map(({ key, folder }) => ({ key, course: currentState.courseText, folder, title: titleForKey(key) }))
     );
     // Phase 3: offer retry for content-skipped items (not already-downloaded
     // or duplicate-clicks, which already fired).
@@ -872,21 +1287,28 @@ async function startDownload() {
     }
     renderList(); // refresh ✓ downloaded badges
   } else {
-    setProgress("Something went wrong triggering the downloads. Click Refresh and try again.");
+    setProgress("Something went wrong triggering the downloads. Click Refresh and try again — or open Diagnostics and copy the report if it keeps failing.");
     notifyDownloadComplete({ folderName, clicked: 0, skipped: keys.length + alreadySkipped.length });
   }
 }
 
 function wireEvents() {
+  // Idempotent: a second registration (double-executed script, repeated
+  // DOMContentLoaded) must never double-fire queue actions.
+  if (eventsWired) return;
+  eventsWired = true;
   el("retryBtn").addEventListener("click", loadState);
   el("refreshBtn").addEventListener("click", loadState);
   el("facultyFilter").addEventListener("change", renderList);
   el("dateFrom").addEventListener("change", renderList);
   el("dateTo").addEventListener("change", renderList);
+  el("searchBox").addEventListener("input", renderList);
   el("resetFiltersBtn").addEventListener("click", () => {
     el("facultyFilter").value = "__ALL__";
     el("dateFrom").value = "";
     el("dateTo").value = "";
+    el("searchBox").value = "";
+    renderChips(uniqueFaculty(currentState.rows));
     renderList();
   });
   el("selectAllBtn").addEventListener("click", () => {
@@ -900,6 +1322,9 @@ function wireEvents() {
     renderList();
   });
   el("downloadBtn").addEventListener("click", handleDownload);
+  el("presetWeekBtn").addEventListener("click", () => selectRecent(7));
+  el("presetMonthBtn").addEventListener("click", () => selectRecent(30));
+  el("invertBtn").addEventListener("click", invertVisible);
   el("previewCancelBtn").addEventListener("click", hidePreview);
   el("previewStartBtn").addEventListener("click", startDownload);
   el("previewOverlay").addEventListener("click", (e) => {
@@ -907,7 +1332,8 @@ function wireEvents() {
   });
   el("folderName").addEventListener("input", updateFolderPreview);
   el("folderTemplate").addEventListener("change", async () => {
-    folderTemplate = el("folderTemplate").value === "semester-course" ? "semester-course" : "course";
+    const v = el("folderTemplate").value;
+    folderTemplate = v === "semester-course-faculty" ? "semester-course-faculty" : (v === "semester-course" ? "semester-course" : "course");
     await storageSet({ folderTemplate });
     updateFolderPreview();
   });
@@ -920,6 +1346,12 @@ function wireEvents() {
   });
   el("diagBtn").addEventListener("click", runDiagnostics);
   el("diagCloseBtn").addEventListener("click", () => el("diagOverlay").classList.add("hidden"));
+  el("diagCopyBtn").addEventListener("click", copyDiagReport);
+  el("diagTourBtn").addEventListener("click", () => {
+    el("diagOverlay").classList.add("hidden");
+    el("coachOverlay").classList.remove("hidden");
+  });
+  el("coachDoneBtn").addEventListener("click", hideCoach);
   el("diagOverlay").addEventListener("click", (e) => {
     if (e.target === el("diagOverlay")) el("diagOverlay").classList.add("hidden");
   });
