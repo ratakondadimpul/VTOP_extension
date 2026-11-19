@@ -231,12 +231,11 @@ until something is ticked (with hint), live per-file status markers
 (active ✓/!/–) during the queue, and a richer preview (folder breakdown,
 first-8 file sample, same-title collision forecast).
 
-**Selection power:** Last-7/30-days presets, invert-visible, faculty quick
-chips (top 5 by count), and a repeated-title forecast in the count bar.
-
-**Onboarding + errors:** 3-step first-run tour (persisted, replayable from
-Diagnostics), error-state checklist, empty-filter guidance, actionable
-total-failure message, and one-click Copy report in Diagnostics.
+**Selection power:** faculty quick chips (all faculties), and a
+repeated-title forecast in the count bar.
+...
+**Onboarding + errors:** 3-step first-run tour (persisted), error-state
+checklist, empty-filter guidance, and an actionable total-failure message.
 
 ## v1.10.1 — stale-page robustness (found on a live 74-file batch)
 

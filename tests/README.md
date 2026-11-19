@@ -53,8 +53,7 @@ Exit code `0` = all pass, `1` = failure.
   survive; size index degrades gracefully). `SIZE_REPORT` unions the memory
   index with the persisted `downloadJobs` map, so the report survives worker
   restarts (v1.9.1, found on a live 46-file batch)
-- `content.js`: L1/L2 table detection, no-table graceful path, `DIAGNOSTICS`,
-  `ADVANCE_PAGE` no-next, single-click no-dupe, duplicate-injection guard,
+- `content.js`: L1/L2 table detection, no-table graceful path, single-click no-dupe, duplicate-injection guard,
   skip reasons, pause-proof bounded scan of churning tables, hostile-title
   inert rendering
 - `content.js` (v1.8.0): async full-scan wait (22 rows despite same first
@@ -71,10 +70,9 @@ Exit code `0` = all pass, `1` = failure.
 - `background.js`: folder sanitization, nested-path safety, job registry,
   newest-job attribution, disarm-all fallback
 - `popup.js`: terminology, history badges, folder templates (incl.
-  Semester/Course/Faculty split), diagnostics
-  overlay (copy report, tour replay), page sweep (no-next), per-key queue (pause/resume, cancel,
+  Semester/Course/Faculty split), per-key queue (pause/resume, cancel,
   retry-skipped, safe-mode 2-vs-3 attempts, live row statuses), per-item failures that no longer
-  poison the batch, skip-existing, search, presets/invert, faculty chips,
+  poison the batch, skip-existing, search, faculty chips,
   repeated-title forecast, preview upgrade, coach tour, empty-filter note,
   GET_COURSE staleness guard, changed-course abort, leading-miss early stop,
   serialized loads, idempotent wiring, history recording
