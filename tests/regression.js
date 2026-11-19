@@ -128,7 +128,7 @@ const PLACEHOLDERDASHHTML = `<select><option selected>-- Select --</option><opti
   const errs = [];
   page.on('pageerror', (e) => errs.push(String(e)));
 
-  // --- content: L1 + diagnostics + advance + guards (focused L1 fixture) ---
+  // --- content: L1 + diagnostics + guards (focused L1 fixture) ---
   let send = await contentContext(page, L1HTML);
   let st = await send({ type: 'GET_STATE' });
   check('L1 table strategy', st.tableStrategy === 'L1-strict', st.tableStrategy);
@@ -136,8 +136,6 @@ const PLACEHOLDERDASHHTML = `<select><option selected>-- Select --</option><opti
   let dg = await send({ type: 'DIAGNOSTICS' });
   check('DIAGNOSTICS buttons/multi', dg.ok && dg.diag.downloadButtons >= 2 && dg.diag.multiDocRows === 1,
     `buttons=${dg.diag && dg.diag.downloadButtons} multi=${dg.diag && dg.diag.multiDocRows}`);
-  const adv = await send({ type: 'ADVANCE_PAGE' });
-  check('ADVANCE_PAGE no-next', adv.advanced === false && adv.reason === 'no_next', JSON.stringify(adv));
 
   // single click + duplicate injection + skip reasons (mock fixture)
   await page.evaluate(() => {
@@ -371,17 +369,6 @@ const PLACEHOLDERDASHHTML = `<select><option selected>-- Select --</option><opti
         o.match = document.getElementById('matchCount').textContent;
         o.badge = document.querySelectorAll('.dl-badge').length;
         o.tmpl = document.getElementById('folderTemplate').value;
-        // diagnostics overlay
-        document.getElementById('diagBtn').click();
-        await new Promise((r) => setTimeout(r, 500));
-        o.diagVisible = !document.getElementById('diagOverlay').classList.contains('hidden');
-        o.diagItems = document.querySelectorAll('#diagList li').length;
-        document.getElementById('diagCloseBtn').click();
-        // sweep on single-page mock -> stops at no_next, keeps rows
-        window.confirm = () => true;
-        document.getElementById('sweepBtn').click();
-        await new Promise((r) => setTimeout(r, 2500));
-        o.rowsAfterSweep = document.querySelectorAll('.material-row').length;
         // queue: select k2+k3 (k1 already downloaded + skipExisting on)
         document.querySelectorAll('.material-row input[type=checkbox]').forEach((cb, i) => { if (i > 0) cb.click(); });
         document.getElementById('downloadBtn').click();
@@ -400,55 +387,8 @@ const PLACEHOLDERDASHHTML = `<select><option selected>-- Select --</option><opti
     }, 1000));
   }, { html, js, mockState });
   check('popup terminology+history+template', /2 new/.test(r.match) && r.badge === 1 && r.tmpl === 'semester-course', JSON.stringify({ match: r.match, badge: r.badge, tmpl: r.tmpl }));
-  check('diagnostics overlay', r.diagVisible && r.diagItems >= 4, `items=${r.diagItems}`);
-  check('sweep keeps rows (no-next)', r.rowsAfterSweep === 3, `rows=${r.rowsAfterSweep}`);
   check('queue per-key + skip-existing', JSON.stringify(r.sentBatches) === JSON.stringify(['k2', 'k3']), JSON.stringify(r.sentBatches));
   check('history recorded + badges', r.storeKeys === 'k1,k2,k3' && r.badgesAfter === 3, `keys=${r.storeKeys} badges=${r.badgesAfter}`);
-  // --- Iteration 4 sweep cap boundary (REQUIREMENTS J) ---
-  // SWEEP_MAX_PAGES=20 means at most 20 pages visited total (1 initial + 19
-  // advances). An always-advancing mock must NOT produce a 21st visit.
-  const cap = await page.evaluate(({ html, js }) => {
-    document.body.innerHTML = '<div id=h></div>';
-    document.getElementById('h').innerHTML = html;
-    const store = { downloadHistory: {}, folderTemplate: 'course' };
-    const mockCap = { ok: true, courseText: 'Fall Semester 2025-26 - ISWE204L - Operating Systems - TH', folderNameSuggestion: 'ISWE204L - Operating Systems', showingInfo: null, rows: [{ key: 'k1', title: 'A', docCount: 1, facultyName: 'F', dateText: '01-01-2025' }] };
-    let adv = 0, get = 0;
-    window.chrome = {
-      tabs: { query: async () => [{ id: 9, url: 'https://vtop.vit.ac.in/vtop/x' }], sendMessage: (id, msg, cb) => {
-        if (msg.type === 'GET_STATE') { get++; cb(mockCap); }
-        else if (msg.type === 'ADVANCE_PAGE') { adv++; cb({ advanced: true, rowsOnPage: 1 }); }
-        else if (msg.type === 'DIAGNOSTICS') cb({ ok: true, diag: { downloadButtons: 0, multiDocRows: 0, log: [] } });
-        else cb({ clicked: 0, skipped: 0, ok: true, skippedDetails: [] });
-      } },
-      scripting: { executeScript: async () => {} },
-      runtime: { sendMessage: async () => ({ ok: true }), onMessage: { addListener() {}, removeListener() {} } },
-      storage: { local: {
-        get: (k, cb) => { const o = {}; (Array.isArray(k) ? k : [k]).forEach((x) => { o[x] = store[x]; }); cb(o); },
-        set: (o, cb) => { Object.assign(store, o); cb && cb(); }
-      } },
-      notifications: { create: () => {} }
-    };
-    window.eval(js);
-    document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true }));
-    return new Promise((res) => setTimeout(async () => {
-      try {
-        await new Promise((rr) => setTimeout(rr, 1200));
-        let a = 0, g = 0;
-        const orig = window.chrome.tabs.sendMessage;
-        window.chrome.tabs.sendMessage = (id, msg, cb) => {
-          if (msg.type === 'ADVANCE_PAGE') a++;
-          if (msg.type === 'GET_STATE') g++;
-          return orig(id, msg, cb);
-        };
-        window.confirm = () => true;
-        document.getElementById('sweepBtn').click();
-        await new Promise((rr) => setTimeout(rr, 6000));
-        res({ adv: a, get: g, prog: document.getElementById('progressText').textContent });
-      } catch (e) { res({ error: String(e) }); }
-    }, 800));
-  }, { html, js });
-  check('sweep respects 20-page cap', cap.adv <= 19 && (cap.adv + 1) <= 20 && /20 page\(s\) \(cap\)/.test(cap.prog || ''),
-    `adv=${cap.adv} get=${cap.get} prog=${JSON.stringify(cap.prog)}`);
   const sz = await page.evaluate(() => window.summarizeSizes([
     { name: 'a.pdf', bytes: 2100000, state: 'complete' },
     { name: 'a.pdf', bytes: 2100000, state: 'complete' },
@@ -953,21 +893,15 @@ const PLACEHOLDERDASHHTML = `<select><option selected>-- Select --</option><opti
   await page.evaluate(() => clearInterval(window.__churn));
   check('churning table resolves bounded', st.rows.length === 1 && elapsed < 25000, `rows=${st.rows.length} elapsed=${elapsed}ms`);
 
-  // --- Phase 3 UX: presets, faculty chips, repeated-title forecast ---
-  const dmy = (daysAgo) => {
-    const d = new Date();
-    d.setDate(d.getDate() - daysAgo);
-    const p = (n) => String(n).padStart(2, "0");
-    return `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}`;
-  };
+  // --- Phase 3 UX: faculty chips (only filter), repeated-title forecast ---
   const p3Mock = {
     ok: true, courseText: 'C', folderNameSuggestion: 'C', showingInfo: null,
     rows: [
-      { key: 'p1', title: 'Fresh', docCount: 1, facultyName: 'SIVA', dateText: dmy(0) },
-      { key: 'p2', title: 'Oldie', docCount: 1, facultyName: 'SIVA', dateText: dmy(10) },
+      { key: 'p1', title: 'Fresh', docCount: 1, facultyName: 'SIVA', dateText: '01-01-2025' },
+      { key: 'p2', title: 'Oldie', docCount: 1, facultyName: 'SIVA', dateText: '02-01-2025' },
       { key: 'p3', title: 'Undated', docCount: 1, facultyName: 'BALA', dateText: null },
-      { key: 'p4', title: 'Dupe', docCount: 1, facultyName: 'BALA', dateText: dmy(40), dupIndex: 1, dupTotal: 2 },
-      { key: 'p5', title: 'Dupe', docCount: 1, facultyName: 'BALA', dateText: dmy(40), dupIndex: 2, dupTotal: 2 }
+      { key: 'p4', title: 'Dupe', docCount: 1, facultyName: 'BALA', dateText: '03-01-2025', dupIndex: 1, dupTotal: 2 },
+      { key: 'p5', title: 'Dupe', docCount: 1, facultyName: 'BALA', dateText: '03-01-2025', dupIndex: 2, dupTotal: 2 }
     ]
   };
   const p3 = await page.evaluate(({ html, js, mockState }) => {
@@ -994,38 +928,35 @@ const PLACEHOLDERDASHHTML = `<select><option selected>-- Select --</option><opti
       try {
         const visible = () => Array.from(document.querySelectorAll('.material-row'))
           .filter((e) => e.style.display !== 'none').length;
-        const selCount = () => document.getElementById('downloadBtn').textContent;
+        const pressedChip = () => {
+          const el = Array.from(document.querySelectorAll('#facultyChips .chip'))
+            .find((c) => c.getAttribute('aria-pressed') === 'true');
+          return el ? el.textContent : null;
+        };
         o.chips = Array.from(document.querySelectorAll('#facultyChips .chip')).map((c) => c.textContent);
-        // chip filters to SIVA only
+        // chip filters to SIVA only (dropdown is gone: chips are the filter)
         Array.from(document.querySelectorAll('#facultyChips .chip'))
           .find((c) => c.textContent.startsWith('SIVA')).click();
-        o.afterChip = { visible: visible(), filter: document.getElementById('facultyFilter').value };
-        // back to All, then presets
+        o.afterChip = { visible: visible(), pressed: pressedChip() };
+        // back to All
         Array.from(document.querySelectorAll('#facultyChips .chip'))[0].click();
-        document.getElementById('presetWeekBtn').click();
-        o.week = selCount();
-        document.getElementById('presetMonthBtn').click();
-        o.month = selCount();
-        document.getElementById('invertBtn').click();
-        o.inverted = selCount();
+        o.backToAll = { visible: visible(), pressed: pressedChip() };
         o.repeated = document.getElementById('matchCount').textContent;
-        // reset restores All + clears search
+        // reset restores All + clears search/dates
         document.getElementById('searchBox').value = 'zzz';
         document.getElementById('searchBox').dispatchEvent(new Event('input'));
         document.getElementById('resetFiltersBtn').click();
-        o.afterReset = { visible: visible(), filter: document.getElementById('facultyFilter').value,
+        o.afterReset = { visible: visible(), pressed: pressedChip(),
           search: document.getElementById('searchBox').value };
         res(o);
       } catch (e) { res({ error: String(e) }); }
     }, 1200));
   }, { html, js, mockState: p3Mock });
   check('faculty chips filter', JSON.stringify(p3.chips) === JSON.stringify(['All', 'BALA · 3', 'SIVA · 2']) &&
-    p3.afterChip.visible === 2 && p3.afterChip.filter === 'SIVA', JSON.stringify({ chips: p3.chips, after: p3.afterChip }));
-  check('date presets select recent', p3.week === 'Download selected (1)' && p3.month === 'Download selected (2)',
-    JSON.stringify({ week: p3.week, month: p3.month }));
-  check('invert flips visible', p3.inverted === 'Download selected (3)', JSON.stringify({ inv: p3.inverted }));
+    p3.afterChip.visible === 2 && p3.afterChip.pressed === 'SIVA · 2', JSON.stringify({ chips: p3.chips, after: p3.afterChip }));
+  check('chips back to all', p3.backToAll.visible === 5 && p3.backToAll.pressed === 'All', JSON.stringify(p3.backToAll));
   check('repeated-title forecast', /1 repeated title[^s]/.test(p3.repeated) || /1 repeated title$/.test(p3.repeated), JSON.stringify(p3.repeated));
-  check('reset restores chips+search', p3.afterReset.visible === 5 && p3.afterReset.filter === '__ALL__' && p3.afterReset.search === '',
+  check('reset restores chips+search', p3.afterReset.visible === 5 && p3.afterReset.pressed === 'All' && p3.afterReset.search === '',
     JSON.stringify(p3.afterReset));
 
   // --- Phase 4 UX: coach tour, empty-filter note, diagnostics copy ---
@@ -1037,18 +968,13 @@ const PLACEHOLDERDASHHTML = `<select><option selected>-- Select --</option><opti
     document.body.innerHTML = '<div id=h></div>';
     document.getElementById('h').innerHTML = html;
     const store = { downloadHistory: {}, folderTemplate: 'course' };
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { writeText: (t) => { window.__copied = t; return Promise.resolve(); } },
-      configurable: true
-    });
     window.chrome = {
       tabs: { query: async () => [{ id: 9, url: 'https://vtop.vit.ac.in/vtop/x' }], sendMessage: (id, msg, cb) => {
         if (msg.type === 'GET_STATE') cb(mockState);
-        else if (msg.type === 'DIAGNOSTICS') cb({ ok: true, diag: { downloadButtons: 1, multiDocRows: 0, log: [{ strategy: 's', detail: 'd' }] } });
         else cb({ clicked: 0, skipped: 0, ok: true, skippedDetails: [] });
       } },
       scripting: { executeScript: async () => {} },
-      runtime: { getManifest: () => ({ version: '9.9.9' }),
+      runtime: {
         sendMessage: async () => ({ ok: true }), onMessage: { addListener() {}, removeListener() {} } },
       storage: { local: {
         get: (k, cb) => { const o = {}; (Array.isArray(k) ? k : [k]).forEach((x) => { o[x] = store[x]; }); cb(o); },
@@ -1072,16 +998,7 @@ const PLACEHOLDERDASHHTML = `<select><option selected>-- Select --</option><opti
         o.emptyNote = document.querySelector('#materialsList .empty-note').textContent.slice(0, 40);
         document.getElementById('searchBox').value = '';
         document.getElementById('searchBox').dispatchEvent(new Event('input'));
-        // diagnostics copy + tour replay
-        document.getElementById('diagBtn').click();
-        await new Promise((r) => setTimeout(r, 800));
-        document.getElementById('diagCopyBtn').click();
-        await new Promise((r) => setTimeout(r, 300));
-        o.copyBtn = document.getElementById('diagCopyBtn').textContent;
-        o.copiedHasCourse = /"course": "C"/.test(window.__copied || '');
-        document.getElementById('diagTourBtn').click();
-        o.tourReplay = !document.getElementById('coachOverlay').classList.contains('hidden');
-        // dismiss, then Refresh must NOT resurrect the tour mid-session
+        // dismiss tour, then Refresh must NOT resurrect it mid-session
         document.getElementById('coachDoneBtn').click();
         document.getElementById('refreshBtn').click();
         await new Promise((r) => setTimeout(r, 800));
@@ -1100,9 +1017,6 @@ const PLACEHOLDERDASHHTML = `<select><option selected>-- Select --</option><opti
   check('coach first-run + persist', p4.coachFirstRun === true && p4.coachDismissed === true && p4.coachStored === true,
     JSON.stringify({ first: p4.coachFirstRun, gone: p4.coachDismissed, stored: p4.coachStored }));
   check('empty-filter note', /No materials match/.test(p4.emptyNote || ''), JSON.stringify(p4.emptyNote));
-  check('diagnostics copy report', p4.copyBtn === 'Copied ✓' && p4.copiedHasCourse === true,
-    JSON.stringify({ btn: p4.copyBtn, course: p4.copiedHasCourse }));
-  check('tour replay from diagnostics', p4.tourReplay === true, JSON.stringify(p4.tourReplay));
   check('tour not resurrected by refresh', p4.noResurrect === true, JSON.stringify(p4.noResurrect));
   check('preview filters show search', /only/.test(p4.previewFilters || ''), JSON.stringify(p4.previewFilters));
 

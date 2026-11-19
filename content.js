@@ -884,63 +884,6 @@ async function downloadRows(keys, onProgress) {
   return { clicked, skipped, ok: true, skippedDetails };
 }
 
-// Single verified page-advance for the experimental "all pages" flow.
-// Clicks Next AT MOST once, then verifies the table actually changed
-// (first-row key differs). Any anomaly -> { advanced: false } and the
-// popup aborts the sweep. Never loops by itself.
-async function advancePageOnce() {
-  const courseBefore = getSelectedCourseText();
-  const found = findMaterialsTable();
-  if (!found) return { advanced: false, reason: "no_table" };
-  const { table, headerText, downloadCol } = found;
-  const beforeRows = parseCurrentPage(table, headerText, downloadCol);
-  if (!beforeRows.length) return { advanced: false, reason: "no_rows" };
-  const beforeKey = beforeRows[0].key;
-
-  const wrapper = findTableWrapper(table);
-  const scope = wrapper && wrapper.querySelectorAll ? wrapper : document;
-  const candidates = Array.from(
-    scope.querySelectorAll(
-      ".dataTables_paginate .paginate_button.next, a.paginate_button.next, button.paginate_button.next, [id$='Next'], [aria-label='Next']"
-    )
-  );
-  const next = candidates.find((b) => {
-    try {
-      if (b.disabled) return false;
-      if (b.classList && (b.classList.contains("disabled") || b.classList.contains("paginate_button_disabled"))) return false;
-      if (b.getAttribute && b.getAttribute("aria-disabled") === "true") return false;
-      const style = window.getComputedStyle ? window.getComputedStyle(b) : null;
-      if (style && (style.display === "none" || style.visibility === "hidden")) return false;
-      return true;
-    } catch (e) {
-      return false;
-    }
-  });
-  if (!next) return { advanced: false, reason: "no_next" };
-
-  try {
-    next.scrollIntoView({ block: "nearest" });
-    next.click();
-  } catch (e) {
-    return { advanced: false, reason: "click_failed" };
-  }
-
-  const start = Date.now();
-  while (Date.now() - start < 5000) {
-    await sleep(250);
-    if (getSelectedCourseText() !== courseBefore) {
-      return { advanced: false, reason: "course_changed" };
-    }
-    const again = findMaterialsTable();
-    if (!again) return { advanced: false, reason: "table_gone" };
-    const live = parseCurrentPage(again.table, again.headerText, again.downloadCol);
-    if (live.length && live[0].key !== beforeKey) {
-      return { advanced: true, rowsOnPage: live.length };
-    }
-  }
-  return { advanced: false, reason: "no_change" };
-}
-
 // Read-only self check for the Diagnostics screen. Never clicks anything
 // except nothing at all: pure DOM inspection.
 function runDiagnostics() {
@@ -1030,11 +973,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     downloadRows(msg.keys, (progress) => {
       chrome.runtime.sendMessage({ type: "DOWNLOAD_PROGRESS", progress });
     }).then((result) => sendResponse(result));
-    return true; // async
-  }
-
-  if (msg && msg.type === "ADVANCE_PAGE") {
-    advancePageOnce().then(sendResponse);
     return true; // async
   }
 

@@ -17,7 +17,7 @@ let skipExisting = true;
 let folderTemplate = "course"; // "course" | "semester-course" | "semester-course-faculty"
 let coachSeen = false; // first-run tour; persisted in storage.local
 let coachShownThisSession = false; // never resurrect via Refresh mid-session
-let lastDiagReport = null; // last diagnostics payload, for Copy report
+let selectedFaculty = "__ALL__"; // single-select faculty filter (chips only)
 const HISTORY_LIMIT = 2000;
 
 const el = (id) => document.getElementById(id);
@@ -307,7 +307,7 @@ function parseDmy(text) {
 }
 
 function getFilters() {
-  const faculty = el("facultyFilter").value;
+  const faculty = selectedFaculty || "__ALL__";
   const fromVal = el("dateFrom").value;
   const toVal = el("dateTo").value;
   const from = fromVal ? new Date(fromVal + "T00:00:00") : null;
@@ -340,7 +340,7 @@ function renderReady() {
   // Preserve user edits across Refresh for the same course. Only reset to
   // defaults on first load or when the course actually changed.
   const isNewCourse = currentState._isNewCourse !== false;
-  const prevFaculty = el("facultyFilter").value || "__ALL__";
+  const prevFaculty = selectedFaculty;
   const prevFolder = el("folderName").value;
 
   el("courseText").textContent = currentState.courseText;
@@ -364,31 +364,19 @@ function renderReady() {
     scanNote.textContent += ` Note: ${scanDetail.warning} — try Refresh once more; if it persists, page Next manually.`;
   }
 
-  const facultySelect = el("facultyFilter");
   const facultyNames = uniqueFaculty(currentState.rows);
-  facultySelect.innerHTML = "";
-  const allOpt = document.createElement("option");
-  allOpt.value = "__ALL__";
-  allOpt.textContent = "All faculty";
-  facultySelect.appendChild(allOpt);
-  facultyNames.forEach((name) => {
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    facultySelect.appendChild(opt);
-  });
   // Restore previous faculty selection if it still exists; otherwise All.
   // Date inputs are not rebuilt, so they already persist.
-  if (!isNewCourse && prevFaculty && (prevFaculty === "__ALL__" || facultyNames.includes(prevFaculty))) {
-    facultySelect.value = prevFaculty;
+  if (isNewCourse || (prevFaculty !== "__ALL__" && !facultyNames.includes(prevFaculty))) {
+    selectedFaculty = "__ALL__";
   }
   renderChips(facultyNames);
 
   renderList();
 }
 
-// Faculty quick chips: All + top faculties by row count. Single-select,
-// mirrors the dropdown (same filter path, same tests).
+// Faculty quick chips: the ONLY faculty filter (dropdown removed for
+// simplicity). All faculties listed, most entries first. Single-select.
 function renderChips(facultyNames) {
   const box = el("facultyChips");
   if (!box) return;
@@ -398,11 +386,10 @@ function renderChips(facultyNames) {
     const f = r.facultyName || "Unknown faculty";
     counts.set(f, (counts.get(f) || 0) + 1);
   }
-  const top = Array.from(counts.entries())
+  const ordered = Array.from(counts.entries())
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
     .map(([name]) => name);
-  const current = el("facultyFilter").value || "__ALL__";
+  const current = selectedFaculty || "__ALL__";
   const mk = (value, label) => {
     const b = document.createElement("button");
     b.type = "button";
@@ -410,16 +397,14 @@ function renderChips(facultyNames) {
     b.textContent = label;
     b.setAttribute("aria-pressed", value === current ? "true" : "false");
     b.addEventListener("click", () => {
-      el("facultyFilter").value = value;
+      selectedFaculty = value;
       renderChips(facultyNames);
       renderList();
     });
     box.appendChild(b);
   };
   mk("__ALL__", "All");
-  // Keep dropdown-only faculties reachable: chips show the top 5, the
-  // dropdown still lists everything.
-  for (const name of top) mk(name, `${name} · ${counts.get(name)}`);
+  for (const name of ordered) mk(name, `${name} · ${counts.get(name)}`);
 }
 
 function renderList() {
@@ -496,36 +481,6 @@ function updateSelectedCount() {
   el("downloadBtn").disabled = queueRunning || n === 0;
   const hint = el("selectHint");
   if (hint) hint.textContent = n === 0 ? "Tick materials above to enable download." : "";
-}
-
-// Selection presets operate on currently visible (filter-matching) rows.
-// Date presets compare calendar days; undated rows are left alone.
-function startOfToday() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function selectRecent(days) {
-  if (!currentState) return;
-  const filters = getFilters();
-  const cutoff = startOfToday();
-  cutoff.setDate(cutoff.getDate() - (days - 1));
-  currentState.rows.filter((r) => rowMatchesFilters(r, filters)).forEach((r) => {
-    const d = parseDmy(r.dateText);
-    if (d && d >= cutoff) selectedKeys.add(r.key);
-  });
-  renderList();
-}
-
-function invertVisible() {
-  if (!currentState) return;
-  const filters = getFilters();
-  currentState.rows.filter((r) => rowMatchesFilters(r, filters)).forEach((r) => {
-    if (selectedKeys.has(r.key)) selectedKeys.delete(r.key);
-    else selectedKeys.add(r.key);
-  });
-  renderList();
 }
 
 // Live per-file queue status markers (st-active/st-done/st-fail/st-skip).
@@ -727,174 +682,8 @@ async function liveCourseText() {
   }
 }
 
-// Phase 4: copyable diagnostics report for bug reports. Clipboard API
-// first, hidden-textarea fallback; honest feedback either way.
-async function copyDiagReport() {
-  const btn = el("diagCopyBtn");
-  const say = (t) => { btn.textContent = t; };
-  const text = lastDiagReport || "diagnostics unavailable";
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(text);
-      say("Copied ✓");
-      setTimeout(() => say("Copy report"), 2000);
-      return;
-    }
-    throw new Error("no clipboard API");
-  } catch (e) {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand("copy");
-      ta.remove();
-      say(ok ? "Copied ✓" : "Copy failed");
-    } catch (e2) {
-      say("Copy failed");
-    }
-    setTimeout(() => say("Copy report"), 2000);
-  }
-}
-
-// Phase 4: read-only self check. Never clicks VTOP controls.
-async function runDiagnostics() {
-  const list = el("diagList");
-  list.innerHTML = "";
-  const add = (ok, text, level) => {
-    const li = document.createElement("li");
-    li.className = ok ? "ok" : level || "bad";
-    li.textContent = `${ok ? "✓" : "✕"} ${text}`;
-    list.appendChild(li);
-  };
-  el("diagOverlay").classList.remove("hidden");
-
-  const tab = await getActiveVtopTab();
-  add(!!tab, tab ? `VTOP tab detected (${tab.url.slice(0, 60)}…)` : "No VTOP tab — open your Course Page first");
-  if (!tab) return;
-
-  let state = await sendMessageToTab(tab.id, { type: "GET_STATE" });
-  if (!state) {
-    await ensureContentScript(tab.id);
-    state = await sendMessageToTab(tab.id, { type: "GET_STATE" });
-  }
-  add(!!(state && state.courseText), state && state.courseText ? `Course detected: ${state.courseText.slice(0, 70)}` : "Course dropdown not readable");
-  add(!!(state && state.rows && state.rows.length), state && state.rows ? `${state.rows.length} material rows parsed` : "Materials table not found");
-  if (state && state.tableStrategy && state.tableStrategy !== "L1-strict") {
-    add(false, `Table matched via fallback ${state.tableStrategy} — VTOP markup may have changed`, "warn");
-  }
-  if (state && state.multiDocRows) {
-    add(true, `${state.multiDocRows} multi-document row(s) — one download action each`);
-  }
-
-  let diag = null;
-  try {
-    diag = await sendMessageToTab(tab.id, { type: "DIAGNOSTICS" });
-  } catch (e) {
-    diag = null;
-  }
-  if (diag && diag.ok) {
-    add(diag.diag.downloadButtons > 0, `${diag.diag.downloadButtons} download control(s) on this page`);
-    (diag.diag.log || []).forEach((entry) => {
-      const li = document.createElement("li");
-      li.className = "warn";
-      li.textContent = `· ${entry.strategy} — ${entry.detail}`;
-      list.appendChild(li);
-    });
-  } else {
-    add(false, "Content-script diagnostics unavailable");
-  }
-
-  let bgOk = false;
-  try {
-    const r = await chrome.runtime.sendMessage({ type: "EXTEND_CAPTURE", durationMs: 1000 });
-    bgOk = !!(r && r.ok);
-  } catch (e) {
-    bgOk = false;
-  }
-  add(bgOk, bgOk ? "Background worker reachable (capture channel ok)" : "Background worker unreachable");
-  add(true, `Extension v${chrome.runtime.getManifest ? chrome.runtime.getManifest().version : "?"}`);
-  try {
-    lastDiagReport = JSON.stringify({
-      extension: (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || "?",
-      url: (tab && tab.url) || null,
-      course: (state && state.courseText) || null,
-      rows: (state && state.rows && state.rows.length) || 0,
-      tableStrategy: (state && state.tableStrategy) || null,
-      downloadButtons: (diag && diag.diag && diag.diag.downloadButtons) || 0,
-      log: ((diag && diag.diag && diag.diag.log) || []).map((e) => `${e.strategy} — ${e.detail}`),
-      at: new Date().toISOString()
-    }, null, 2);
-  } catch (e) {
-    lastDiagReport = null;
-  }
-}
-
-// Phase 4: experimental verified page sweep. One Next per ADVANCE_PAGE,
-// verified changed render each step, same-course guard, hard cap.
-// Aborts (keeping everything collected so far) on ANY anomaly.
-const SWEEP_MAX_PAGES = 20;
-
-async function collectAllPages() {
-  if (!currentState || queueRunning) return;
-  const tab = await getActiveVtopTab();
-  if (!tab) {
-    setProgress("Open your VTOP Course Page tab first.");
-    return;
-  }
-  const proceed = confirm(
-    "Experimental: this walks VTOP pages by clicking Next once per page and verifies each step. It stops automatically on any anomaly. Continue?"
-  );
-  if (!proceed) return;
-
-  showLoading("Sweeping pages — verifying each step…");
-  const startCourse = currentState.courseText;
-  let pages = 1;
-  let lastReason = "done";
-  for (;;) {
-    // Iteration 4 cap guard (REQUIREMENTS J): SWEEP_MAX_PAGES=20 means at
-    // most 20 pages visited total (1 initial + 19 advances). Check BEFORE
-    // clicking Next so the 21st page is never visited. The post-increment
-    // pages> check below remains as a backstop.
-    if (pages >= SWEEP_MAX_PAGES) {
-      lastReason = "cap";
-      break;
-    }
-    let adv = null;
-    try {
-      adv = await sendMessageToTab(tab.id, { type: "ADVANCE_PAGE" });
-    } catch (e) {
-      adv = null;
-    }
-    if (!adv || !adv.advanced) {
-      lastReason = (adv && adv.reason) || "no_response";
-      break;
-    }
-    pages++;
-    if (pages > SWEEP_MAX_PAGES) {
-      lastReason = "cap";
-      break;
-    }
-    const st = await sendMessageToTab(tab.id, { type: "GET_STATE" });
-    if (!st || !st.ok || st.courseText !== startCourse) {
-      lastReason = "course_changed";
-      break;
-    }
-    currentState = st;
-    currentState._tabId = tab.id;
-    currentState._isNewCourse = false;
-  }
-  // Final refresh to render everything accumulated (content-side Map kept it).
-  await loadState();
-  if (lastReason !== "no_next" && lastReason !== "done") {
-    setProgress(`Sweep stopped after ${pages} page(s) (${lastReason}) — everything collected so far is kept.`);
-  }
-}
-
 function filterSummary() {
-  const faculty = el("facultyFilter").value;
+  const faculty = selectedFaculty || "__ALL__";
   const fromVal = el("dateFrom").value;
   const toVal = el("dateTo").value;
   const searchBox = el("searchBox");
@@ -1287,7 +1076,7 @@ async function startDownload() {
     }
     renderList(); // refresh ✓ downloaded badges
   } else {
-    setProgress("Something went wrong triggering the downloads. Click Refresh and try again — or open Diagnostics and copy the report if it keeps failing.");
+    setProgress("Something went wrong triggering the downloads. Click Refresh and try again.");
     notifyDownloadComplete({ folderName, clicked: 0, skipped: keys.length + alreadySkipped.length });
   }
 }
@@ -1299,12 +1088,11 @@ function wireEvents() {
   eventsWired = true;
   el("retryBtn").addEventListener("click", loadState);
   el("refreshBtn").addEventListener("click", loadState);
-  el("facultyFilter").addEventListener("change", renderList);
   el("dateFrom").addEventListener("change", renderList);
   el("dateTo").addEventListener("change", renderList);
   el("searchBox").addEventListener("input", renderList);
   el("resetFiltersBtn").addEventListener("click", () => {
-    el("facultyFilter").value = "__ALL__";
+    selectedFaculty = "__ALL__";
     el("dateFrom").value = "";
     el("dateTo").value = "";
     el("searchBox").value = "";
@@ -1322,9 +1110,6 @@ function wireEvents() {
     renderList();
   });
   el("downloadBtn").addEventListener("click", handleDownload);
-  el("presetWeekBtn").addEventListener("click", () => selectRecent(7));
-  el("presetMonthBtn").addEventListener("click", () => selectRecent(30));
-  el("invertBtn").addEventListener("click", invertVisible);
   el("previewCancelBtn").addEventListener("click", hidePreview);
   el("previewStartBtn").addEventListener("click", startDownload);
   el("previewOverlay").addEventListener("click", (e) => {
@@ -1344,18 +1129,7 @@ function wireEvents() {
   el("skipExistingBox").addEventListener("change", () => {
     skipExisting = el("skipExistingBox").checked;
   });
-  el("diagBtn").addEventListener("click", runDiagnostics);
-  el("diagCloseBtn").addEventListener("click", () => el("diagOverlay").classList.add("hidden"));
-  el("diagCopyBtn").addEventListener("click", copyDiagReport);
-  el("diagTourBtn").addEventListener("click", () => {
-    el("diagOverlay").classList.add("hidden");
-    el("coachOverlay").classList.remove("hidden");
-  });
   el("coachDoneBtn").addEventListener("click", hideCoach);
-  el("diagOverlay").addEventListener("click", (e) => {
-    if (e.target === el("diagOverlay")) el("diagOverlay").classList.add("hidden");
-  });
-  el("sweepBtn").addEventListener("click", collectAllPages);
   el("safeModeBox").addEventListener("change", async () => {
     safeMode = el("safeModeBox").checked;
     await storageSet({ safeMode });

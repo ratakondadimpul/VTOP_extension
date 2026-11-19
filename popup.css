@@ -198,7 +198,7 @@ input[type="search"]:focus {
   align-items: flex-end;
 }
 
-/* ---------- list header: count + 2x2 action grid ---------- */
+/* ---------- list header: count + action row ---------- */
 
 .list-header {
   display: flex;
@@ -209,6 +209,8 @@ input[type="search"]:focus {
 }
 
 .list-header .spacer { display: none; }
+
+.list-header .btn.link { flex: 1 1 0; }
 
 #matchCount {
   flex: 1 1 100%;
@@ -256,19 +258,6 @@ input[type="search"]:focus {
   background: var(--accent);
   border-color: var(--accent-deep);
   color: #fff;
-}
-
-/* ---------- selection presets ---------- */
-
-.presets {
-  display: flex;
-  gap: var(--s2);
-  margin: 0 0 var(--s2);
-}
-
-.presets .btn.link {
-  flex: 1 1 0;
-  min-height: 30px;
 }
 
 /* ---------- history toggles: segmented pill row, pinned while scrolling --- */
@@ -476,15 +465,6 @@ input[type="search"]:focus {
   width: 100%;
   margin-top: var(--s2);
 }
-
-#sweepBtn {
-  width: 100%;
-  margin-bottom: var(--s2);
-}
-
-#diagList li.ok { color: var(--ok); }
-#diagList li.warn { color: var(--warn); }
-#diagList li.bad { color: var(--bad); }
 
 .progress-text {
   margin-top: var(--s2);
@@ -735,7 +715,7 @@ input[type="search"]:focus {
   padding: var(--s2) var(--s1);
   font-weight: 600;
   font-size: var(--step--2);
-  flex: 1 1 calc(50% - var(--s1));
+  flex: 1 1 0;
   text-align: center;
   min-height: 32px;
 }
